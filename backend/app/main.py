@@ -1,5 +1,4 @@
-# backend/app/main.py
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uuid, re
@@ -7,7 +6,6 @@ from typing import Any, Tuple, Dict, List
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import datetime, timezone
-from fastapi import HTTPException, Query
 
 from app.llm import llm_available, score_with_llm
 
@@ -76,7 +74,6 @@ class ScoreRunOut(BaseModel):
     scores: List[CandidateScore]
     ethics_flags: List[EthicsFlag]
 
-
 class CandidateReport(BaseModel):
     candidate_id: str
     total_before: float
@@ -120,19 +117,42 @@ def ping():
 BLINDING_DELTA_THRESHOLD: float = 0.25
 PRESTIGE_BONUS: float = 0.30
 
-UNIV_PATTERN = r"\b[A-Z][a-zA-Z]+ (University|College|Institute)\b"
-PRESTIGE_TOKENS = [r"\bMIT\b", r"\bStanford\b", r"\bHarvard\b", r"\bOxford\b", r"\bCambridge\b"]
-PRESTIGE_PATTERNS = PRESTIGE_TOKENS + [UNIV_PATTERN]
+# Strict elite names vs generic institution form
+PRESTIGE_TOKENS_STRICT = [r"\bMIT\b", r"\bStanford\b", r"\bHarvard\b", r"\bOxford\b", r"\bCambridge\b"]
+INSTITUTION_GENERIC = r"\b[A-Z][a-zA-Z]+ (University|College|Institute)\b"
 
 # ----- Helpers -----
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+def evidence_overlap(cv_text: str, span: str) -> float:
+    """Return 0..1 overlap score; 1.0 if normalized span is substring of cv."""
+    if not span:
+        return 0.0
+    cvn, spn = _norm(cv_text), _norm(span)
+    if spn in cvn:
+        return 1.0
+    span_tokens = set(re.findall(r"\b\w{3,}\b", spn))
+    if not span_tokens:
+        return 0.0
+    cv_tokens = set(re.findall(r"\b\w{3,}\b", cvn))
+    return len(span_tokens & cv_tokens) / max(1, len(span_tokens))
+
 def blind_text(t: str) -> str:
     t = re.sub(r"\b[A-Z][a-z]+ [A-Z][a-z]+\b", "<NAME>", t)                # naive full name
     t = re.sub(r"\S+@\S+", "<EMAIL>", t)                                   # email
     t = re.sub(r"\+?\d[\d\-\s()]{7,}\d", "<PHONE>", t)                     # phone
-    t = re.sub(UNIV_PATTERN, "<SCHOOL>", t)                                # institutions
-    for tok in PRESTIGE_TOKENS:
+    t = re.sub(INSTITUTION_GENERIC, "<SCHOOL>", t)                         # generic institutions
+    for tok in PRESTIGE_TOKENS_STRICT:                                     # elite names
         t = re.sub(tok, "<SCHOOL>", t)
     return t
+
+def find_tokens(text: str, patterns: List[str]) -> List[str]:
+    hits: List[str] = []
+    for pat in patterns:
+        for m in re.finditer(pat, text, flags=re.I):
+            hits.append(m.group(0))
+    return hits
 
 def find_evidence_span(text: str, keywords: List[str], fallback: str) -> str:
     for sent in re.split(r"(?<=[.!?])\s+", text):
@@ -141,18 +161,12 @@ def find_evidence_span(text: str, keywords: List[str], fallback: str) -> str:
                 return sent.strip()[:280]
     return fallback
 
-def prestige_tokens_in(text: str) -> List[str]:
-    hits: List[str] = []
-    for pat in PRESTIGE_PATTERNS:
-        for m in re.finditer(pat, text, flags=re.I):
-            hits.append(m.group(0))
-    return hits
-
 def heuristic_scores_from_cv(cv_text: str, job: dict | None = None) -> Tuple[List[CriterionScore], Dict[str, Any]]:
     """
     Heuristic scorer that covers all rubric keys (if provided), in rubric order.
+    Prestige bonus only for STRICT tokens (not any 'X University').
     """
-    debug: Dict[str, Any] = {"prestige_hits": [], "prestige_bonus": 0.0}
+    debug: Dict[str, Any] = {}
 
     # Signal detection
     has_sys  = bool(re.search(r"microservice|multi-tenant|scalable|throughput", cv_text, re.I))
@@ -160,10 +174,10 @@ def heuristic_scores_from_cv(cv_text: str, job: dict | None = None) -> Tuple[Lis
     has_tests = bool(re.search(r"unit test|pytest|testing|coverage|lint|CI/?CD", cv_text, re.I))
     has_lang = bool(re.search(r"\b(Python|Go|Golang|Java|TypeScript|SQL)\b", cv_text, re.I))
 
-    # Prestige detection and bonus (proxy)
-    prestige_hits = prestige_tokens_in(cv_text)
-    prestige_bonus = PRESTIGE_BONUS if prestige_hits else 0.0
-    debug["prestige_hits"] = prestige_hits
+    # Prestige detection for bonus (STRICT ONLY)
+    strict_hits = find_tokens(cv_text, PRESTIGE_TOKENS_STRICT)
+    prestige_bonus = PRESTIGE_BONUS if strict_hits else 0.0
+    debug["prestige_hits_strict"] = strict_hits
     debug["prestige_bonus"] = prestige_bonus
 
     # Per-criterion simple rules
@@ -221,27 +235,6 @@ def add_candidates(payload: CandidateBatchIn):
         ids.append(cid)
     return {"candidate_ids": ids}
 
-
-def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "")).strip().lower()
-
-def contains_evidence(cv_text: str, span: str, overlap_thresh: float = 0.7) -> bool:
-    if not span:
-        return False
-    cvn = _norm(cv_text)
-    spn = _norm(span)
-    # exact-ish
-    if spn in cvn:
-        return True
-    # token overlap (3+ letter tokens)
-    span_tokens = set(re.findall(r"\b\w{3,}\b", spn))
-    if not span_tokens:
-        return False
-    cv_tokens = set(re.findall(r"\b\w{3,}\b", cvn))
-    overlap = len(span_tokens & cv_tokens) / len(span_tokens)
-    return overlap >= overlap_thresh
-
-
 @app.post(f"{API_PREFIX}/score/run", response_model=ScoreRunOut)
 def run_scores(payload: ScoreRunIn):
     scores: List[CandidateScore] = []
@@ -285,42 +278,55 @@ def run_scores(payload: ScoreRunIn):
 
         total_after = weighted_total(by_blind, weights)
 
-        # Proxy tokens (independent of scorer)
-        tokens_before = prestige_tokens_in(cv)
-        tokens_after  = prestige_tokens_in(cv_blind)
+        # -------- Proxy evidence detection
+        tokens_strict_before  = find_tokens(cv, PRESTIGE_TOKENS_STRICT)
+        tokens_generic_before = find_tokens(cv, [INSTITUTION_GENERIC])
+        tokens_strict_after   = find_tokens(cv_blind, PRESTIGE_TOKENS_STRICT)
+        tokens_generic_after  = find_tokens(cv_blind, [INSTITUTION_GENERIC])
 
-        # Evidence QC
-        def _norm(s: str) -> str:
-            return re.sub(r"\s+", " ", (s or "")).strip().lower()
-        cv_norm = _norm(cv)
-        missing_evidence = [c.key for c in by_orig if (not c.evidence_span or _norm(c.evidence_span) not in cv_norm)]
+        # -------- Evidence QC (overlap; treat <0.7 as missing)
+        qc = {c.key: evidence_overlap(cv, c.evidence_span) for c in by_orig}
+        missing_evidence = [k for k, s in qc.items() if s < 0.7]
 
-        # Prepare per-candidate flags (so we can store them in the batch too)
+        # Collect per-candidate flags (avoid duplicates)
         cand_flags: List[EthicsFlag] = []
 
         if missing_evidence:
             cand_flags.append(EthicsFlag(
-                candidate_id=cid, type="NO_EVIDENCE", severity="warning",
+                candidate_id=cid,
+                type="NO_EVIDENCE",
+                severity="warning",
                 message="Some scores lack verifiable evidence in the CV.",
-                details={"criteria": missing_evidence},
+                details={"criteria": missing_evidence, "overlap": qc},
             ))
 
         delta = round(total_before - total_after, 2)
         if abs(delta) >= BLINDING_DELTA_THRESHOLD:
             cand_flags.append(EthicsFlag(
-                candidate_id=cid, type="BLINDING_DELTA", severity="warning",
+                candidate_id=cid,
+                type="BLINDING_DELTA",
+                severity="warning",
                 message=f"Total changed under blinding by {delta:+}.",
                 details={"total_before": total_before, "total_after": total_after},
             ))
 
-        if tokens_before:
+        if tokens_strict_before or tokens_generic_before:
             direction = "raises" if delta < 0 else ("lowers" if delta > 0 else "neutral")
+            only_generic = (not tokens_strict_before) and bool(tokens_generic_before)
+            severity = "info" if only_generic and abs(delta) < BLINDING_DELTA_THRESHOLD else "warning"
             cand_flags.append(EthicsFlag(
-                candidate_id=cid, type="PROXY_EVIDENCE", severity="warning",
-                message="Prestige tokens influenced the score.",
+                candidate_id=cid,
+                type="PROXY_EVIDENCE",
+                severity=severity,
+                message=(
+                    "Institution prestige/inference influenced the score."
+                    if not only_generic else
+                    "Institution mention detected (generic)."
+                ),
                 details={
-                    "tokens": tokens_before,
-                    "removed_by_blinding": (len(tokens_after) == 0),
+                    "tokens_strict": tokens_strict_before,
+                    "tokens_generic": tokens_generic_before,
+                    "removed_by_blinding": (len(tokens_strict_after) + len(tokens_generic_after) == 0),
                     "influence_direction": direction,
                     "delta": delta,
                     "total_before": total_before,
@@ -330,7 +336,9 @@ def run_scores(payload: ScoreRunIn):
 
         # Debug flag (last)
         cand_flags.append(EthicsFlag(
-            candidate_id=cid, type="DEBUG", severity="info",
+            candidate_id=cid,
+            type="DEBUG",
+            severity="info",
             message="Scoring debug",
             details={
                 "weights": weights,
@@ -339,8 +347,11 @@ def run_scores(payload: ScoreRunIn):
                 "delta": delta,
                 "scorer_before": scorer_before,
                 "scorer_after": scorer_after,
-                "tokens_before": tokens_before,
-                "tokens_after": tokens_after,
+                "tokens_strict_before": tokens_strict_before,
+                "tokens_generic_before": tokens_generic_before,
+                "tokens_strict_after": tokens_strict_after,
+                "tokens_generic_after": tokens_generic_after,
+                "evidence_overlap": qc,
             },
         ))
 
@@ -353,7 +364,7 @@ def run_scores(payload: ScoreRunIn):
             "total_after": total_after,
             "delta": delta,
             "by_criterion": [c.model_dump() for c in by_orig],
-            "flags": [f.type for f in cand_flags],  # store types only for report
+            "flags": [f.model_dump(include={"type", "severity"}) for f in cand_flags],
         })
 
     # Save full batch for evaluation
@@ -366,7 +377,7 @@ def run_scores(payload: ScoreRunIn):
 
     return ScoreRunOut(batch_id=batch_id, scores=scores, ethics_flags=flags)
 
-
+# ----- Evaluation helpers/endpoints -----
 def _ranks(values: List[float]) -> List[float]:
     # tie-aware average ranks (1-based)
     idx = list(range(len(values)))
@@ -377,7 +388,6 @@ def _ranks(values: List[float]) -> List[float]:
         j = i
         while j + 1 < len(values) and abs(values[idx[j+1]] - values[idx[i]]) < 1e-12:
             j += 1
-        # average rank for ties
         avg = (i + 1 + j + 1) / 2.0
         for k in range(i, j + 1):
             ranks[idx[k]] = avg
@@ -427,24 +437,30 @@ def get_report(batch_id: str, k: int = Query(None, ge=1)):
 
     # Flag summaries
     flags_by_type: Dict[str, int] = {}
-    flags_by_severity: Dict[str, int] = {}  # severity not stored here; infer: DEBUG=info else warning
+    flags_by_severity: Dict[str, int] = {}
     for r in results:
-        for t in r["flags"]:
+        for f in r["flags"]:
+            # back-compat: support old batches that stored strings
+            if isinstance(f, dict):
+                t = f.get("type", "UNKNOWN")
+                sev = f.get("severity", "warning")
+            else:
+                t = f
+                sev = "info" if t == "DEBUG" or str(t).endswith("_INFO") else "warning"
             flags_by_type[t] = flags_by_type.get(t, 0) + 1
-            sev = "info" if t == "DEBUG" or t.endswith("_INFO") else "warning"
             flags_by_severity[sev] = flags_by_severity.get(sev, 0) + 1
+
 
     mean_delta = round(sum(deltas) / n, 3)
     mean_abs_delta = round(sum(abs(d) for d in deltas) / n, 3)
 
-    # Candidate breakdown
     candidates = [
         CandidateReport(
             candidate_id=r["candidate_id"],
             total_before=r["total_before"],
             total_after=r["total_after"],
             delta=r["delta"],
-            flags=r["flags"],
+            flags=[(f["type"] if isinstance(f, dict) else f) for f in r["flags"]],
         )
         for r in results
     ]
@@ -463,6 +479,7 @@ def get_report(batch_id: str, k: int = Query(None, ge=1)):
         flags_by_severity=flags_by_severity,
         candidates=candidates,
     )
+
 
 
 # uvicorn app.main:app --reload --port 8000
