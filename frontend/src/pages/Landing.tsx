@@ -2,6 +2,7 @@
 import React, { useState } from "react";
 import { motion } from "framer-motion";
 import { createJob, addCandidates, runScoring } from "../lib/api";
+import { Link } from "react-router-dom";
 
 export default function HirethicsLanding() {
   return (
@@ -25,6 +26,7 @@ export default function HirethicsLanding() {
             <a href="#demo" className="px-4 py-2 rounded-xl border border-slate-300 text-sm hover:bg-white">Try Demo</a>
             <a href="#contact" className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-800">Get in touch</a>
           </div>
+          
         </div>
       </header>
 
@@ -151,6 +153,13 @@ export default function HirethicsLanding() {
           View API Docs
         </a>
       </div>
+      <br />
+      <Link
+    to="/evaluation"
+    className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 ring-1 ring-slate-300 hover:bg-slate-50"
+  >
+    Open Evaluation
+  </Link>
     </div>
     <DemoBox />
   </div>

@@ -6,6 +6,8 @@ import uuid, re
 from typing import Any, Tuple, Dict, List
 from pathlib import Path
 from dotenv import load_dotenv
+from datetime import datetime, timezone
+from fastapi import HTTPException, Query
 
 from app.llm import llm_available, score_with_llm
 
@@ -18,6 +20,7 @@ API_PREFIX = "/api/v1"
 # ----- In-memory stores (MVP) -----
 _JOBS: Dict[str, Dict] = {}
 _CANDIDATES: Dict[str, Dict] = {}
+_BATCHES: Dict[str, Dict] = {}
 
 # ----- Schemas -----
 class RubricItem(BaseModel):
@@ -72,6 +75,28 @@ class ScoreRunOut(BaseModel):
     batch_id: str
     scores: List[CandidateScore]
     ethics_flags: List[EthicsFlag]
+
+
+class CandidateReport(BaseModel):
+    candidate_id: str
+    total_before: float
+    total_after: float
+    delta: float
+    flags: List[str]
+
+class ReportOut(BaseModel):
+    batch_id: str
+    job_id: str
+    n_candidates: int
+    k: int
+    spearman_rho: float | None
+    topk_overlap_count: int
+    topk_overlap_ratio: float
+    mean_delta: float
+    mean_abs_delta: float
+    flags_by_type: Dict[str, int]
+    flags_by_severity: Dict[str, int]
+    candidates: List[CandidateReport]
 
 # ----- App setup -----
 app = FastAPI(title="Hirethics AI API")
@@ -225,6 +250,9 @@ def run_scores(payload: ScoreRunIn):
     job = _JOBS.get(payload.job_id)
     weights = {r["key"]: r["weight"] for r in (job or {}).get("rubric", [])}
 
+    batch_id = f"batch_{uuid.uuid4().hex[:8]}"
+    batch_results: List[Dict[str, Any]] = []
+
     for cid in payload.candidate_ids:
         cv = (_CANDIDATES.get(cid) or {}).get("cv_text", "")
 
@@ -242,7 +270,7 @@ def run_scores(payload: ScoreRunIn):
 
         total_before = weighted_total(by_orig, weights)
 
-        # -------- Blinded score (use SAME scorer policy)
+        # -------- Blinded score (same scorer policy)
         cv_blind = blind_text(cv)
         try:
             if llm_available():
@@ -257,63 +285,52 @@ def run_scores(payload: ScoreRunIn):
 
         total_after = weighted_total(by_blind, weights)
 
-        # -------- Proxy evidence detection (independent of scorer)
+        # Proxy tokens (independent of scorer)
         tokens_before = prestige_tokens_in(cv)
         tokens_after  = prestige_tokens_in(cv_blind)
 
-        # -------- Evidence sanity check (NO_EVIDENCE)
-        # normalize whitespace/case for robust containment check
+        # Evidence QC
         def _norm(s: str) -> str:
             return re.sub(r"\s+", " ", (s or "")).strip().lower()
         cv_norm = _norm(cv)
-        missing_evidence = [c.key for c in by_orig if not contains_evidence(cv, c.evidence_span)]
+        missing_evidence = [c.key for c in by_orig if (not c.evidence_span or _norm(c.evidence_span) not in cv_norm)]
+
+        # Prepare per-candidate flags (so we can store them in the batch too)
+        cand_flags: List[EthicsFlag] = []
+
         if missing_evidence:
-            flags.append(EthicsFlag(
-                candidate_id=cid,
-                type="NO_EVIDENCE",
-                severity="warning",
+            cand_flags.append(EthicsFlag(
+                candidate_id=cid, type="NO_EVIDENCE", severity="warning",
                 message="Some scores lack verifiable evidence in the CV.",
                 details={"criteria": missing_evidence},
             ))
 
-        # Use ORIGINAL by_criterion for display (evidence from real CV)
-        scores.append(CandidateScore(candidate_id=cid, total=total_before, by_criterion=by_orig))
-
-        # ---- Ethics flags ----
-        # 1) Blinding delta
         delta = round(total_before - total_after, 2)
         if abs(delta) >= BLINDING_DELTA_THRESHOLD:
-            flags.append(EthicsFlag(
-                candidate_id=cid,
-                type="BLINDING_DELTA",
-                severity="warning",
+            cand_flags.append(EthicsFlag(
+                candidate_id=cid, type="BLINDING_DELTA", severity="warning",
                 message=f"Total changed under blinding by {delta:+}.",
                 details={"total_before": total_before, "total_after": total_after},
             ))
 
-        # 2) Proxy evidence (+ influence direction)
         if tokens_before:
             direction = "raises" if delta < 0 else ("lowers" if delta > 0 else "neutral")
-            flags.append(EthicsFlag(
-                candidate_id=cid,
-                type="PROXY_EVIDENCE",
-                severity="warning",
+            cand_flags.append(EthicsFlag(
+                candidate_id=cid, type="PROXY_EVIDENCE", severity="warning",
                 message="Prestige tokens influenced the score.",
                 details={
                     "tokens": tokens_before,
                     "removed_by_blinding": (len(tokens_after) == 0),
-                    "influence_direction": direction,   # <-- added
+                    "influence_direction": direction,
                     "delta": delta,
                     "total_before": total_before,
                     "total_after": total_after,
                 },
             ))
 
-        # 3) Debug info
-        flags.append(EthicsFlag(
-            candidate_id=cid,
-            type="DEBUG",
-            severity="info",
+        # Debug flag (last)
+        cand_flags.append(EthicsFlag(
+            candidate_id=cid, type="DEBUG", severity="info",
             message="Scoring debug",
             details={
                 "weights": weights,
@@ -327,10 +344,124 @@ def run_scores(payload: ScoreRunIn):
             },
         ))
 
-    return ScoreRunOut(
-        batch_id=f"batch_{uuid.uuid4().hex[:8]}",
-        scores=scores,
-        ethics_flags=flags
+        # Aggregate into response + batch
+        scores.append(CandidateScore(candidate_id=cid, total=total_before, by_criterion=by_orig))
+        flags.extend(cand_flags)
+        batch_results.append({
+            "candidate_id": cid,
+            "total_before": total_before,
+            "total_after": total_after,
+            "delta": delta,
+            "by_criterion": [c.model_dump() for c in by_orig],
+            "flags": [f.type for f in cand_flags],  # store types only for report
+        })
+
+    # Save full batch for evaluation
+    _BATCHES[batch_id] = {
+        "job_id": payload.job_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "weights": weights,
+        "results": batch_results,
+    }
+
+    return ScoreRunOut(batch_id=batch_id, scores=scores, ethics_flags=flags)
+
+
+def _ranks(values: List[float]) -> List[float]:
+    # tie-aware average ranks (1-based)
+    idx = list(range(len(values)))
+    idx.sort(key=lambda i: values[i])
+    ranks = [0.0] * len(values)
+    i = 0
+    while i < len(values):
+        j = i
+        while j + 1 < len(values) and abs(values[idx[j+1]] - values[idx[i]]) < 1e-12:
+            j += 1
+        # average rank for ties
+        avg = (i + 1 + j + 1) / 2.0
+        for k in range(i, j + 1):
+            ranks[idx[k]] = avg
+        i = j + 1
+    return ranks
+
+def _spearman_rho(a: List[float], b: List[float]) -> float | None:
+    n = len(a)
+    if n < 2 or len(b) != n:
+        return None
+    ra, rb = _ranks(a), _ranks(b)
+    mean_ra = sum(ra) / n
+    mean_rb = sum(rb) / n
+    cov = sum((ra[i]-mean_ra)*(rb[i]-mean_rb) for i in range(n))
+    var_a = sum((x-mean_ra)**2 for x in ra)
+    var_b = sum((y-mean_rb)**2 for y in rb)
+    if var_a <= 0 or var_b <= 0:
+        return None
+    return round(cov / (var_a**0.5 * var_b**0.5), 4)
+
+@app.get(f"{API_PREFIX}/report/{{batch_id}}", response_model=ReportOut)
+def get_report(batch_id: str, k: int = Query(None, ge=1)):
+    batch = _BATCHES.get(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    results = batch["results"]
+    n = len(results)
+    if n == 0:
+        raise HTTPException(status_code=400, detail="Empty batch")
+
+    totals_before = [r["total_before"] for r in results]
+    totals_after  = [r["total_after"]  for r in results]
+    deltas        = [r["delta"]        for r in results]
+
+    rho = _spearman_rho(totals_before, totals_after)
+
+    # Top-K overlap
+    if k is None:
+        k = min(5, n)
+    order_before = sorted(range(n), key=lambda i: totals_before[i], reverse=True)[:k]
+    order_after  = sorted(range(n), key=lambda i: totals_after[i],  reverse=True)[:k]
+    set_before = {results[i]["candidate_id"] for i in order_before}
+    set_after  = {results[i]["candidate_id"] for i in order_after}
+    overlap_count = len(set_before & set_after)
+    overlap_ratio = round(overlap_count / max(1, k), 3)
+
+    # Flag summaries
+    flags_by_type: Dict[str, int] = {}
+    flags_by_severity: Dict[str, int] = {}  # severity not stored here; infer: DEBUG=info else warning
+    for r in results:
+        for t in r["flags"]:
+            flags_by_type[t] = flags_by_type.get(t, 0) + 1
+            sev = "info" if t == "DEBUG" or t.endswith("_INFO") else "warning"
+            flags_by_severity[sev] = flags_by_severity.get(sev, 0) + 1
+
+    mean_delta = round(sum(deltas) / n, 3)
+    mean_abs_delta = round(sum(abs(d) for d in deltas) / n, 3)
+
+    # Candidate breakdown
+    candidates = [
+        CandidateReport(
+            candidate_id=r["candidate_id"],
+            total_before=r["total_before"],
+            total_after=r["total_after"],
+            delta=r["delta"],
+            flags=r["flags"],
+        )
+        for r in results
+    ]
+
+    return ReportOut(
+        batch_id=batch_id,
+        job_id=batch["job_id"],
+        n_candidates=n,
+        k=k,
+        spearman_rho=rho,
+        topk_overlap_count=overlap_count,
+        topk_overlap_ratio=overlap_ratio,
+        mean_delta=mean_delta,
+        mean_abs_delta=mean_abs_delta,
+        flags_by_type=flags_by_type,
+        flags_by_severity=flags_by_severity,
+        candidates=candidates,
     )
 
 

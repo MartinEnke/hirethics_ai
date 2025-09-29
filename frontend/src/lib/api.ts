@@ -43,3 +43,10 @@ export async function runScoring(job_id: string, candidate_ids: string[]) {
     body: JSON.stringify({ job_id, candidate_ids, mode: "sync" })
   }) as Promise<{ batch_id: string; scores: any[]; ethics_flags: any[] }>;
 }
+
+export async function getReport(batchId: string, k?: number) {
+    const url = `${API_PREFIX}/report/${batchId}${k ? `?k=${k}` : ""}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
