@@ -6,6 +6,11 @@ from typing import Any, Tuple, Dict, List
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import datetime, timezone
+from fastapi.responses import JSONResponse, StreamingResponse
+from io import StringIO
+import csv
+
+
 
 from app.llm import llm_available, score_with_llm
 
@@ -368,12 +373,14 @@ def run_scores(payload: ScoreRunIn):
         })
 
     # Save full batch for evaluation
-    _BATCHES[batch_id] = {
+    _BCH = {
         "job_id": payload.job_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "weights": weights,
-        "results": batch_results,
+        "results": batch_results,                    # per-candidate totals + criteria
+        "flags_full": [f.model_dump() for f in flags]  # <-- add this
     }
+    _BATCHES[batch_id] = _BCH
 
     return ScoreRunOut(batch_id=batch_id, scores=scores, ethics_flags=flags)
 
@@ -480,6 +487,50 @@ def get_report(batch_id: str, k: int = Query(None, ge=1)):
         candidates=candidates,
     )
 
+@app.get(f"{API_PREFIX}/audit/{{batch_id}}.json")
+def export_audit_json(batch_id: str):
+    batch = _BATCHES.get(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return JSONResponse(
+        content=batch,
+        headers={"Content-Disposition": f"attachment; filename={batch_id}.json"}
+    )
 
+@app.get(f"{API_PREFIX}/audit/{{batch_id}}.csv")
+def export_audit_csv(batch_id: str):
+    batch = _BATCHES.get(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    # Flatten per-candidate summary rows
+    buf = StringIO()
+    writer = csv.DictWriter(
+        buf,
+        fieldnames=[
+            "batch_id","created_at","job_id",
+            "candidate_id","total_before","total_after","delta",
+            "flag_types"
+        ]
+    )
+    writer.writeheader()
+    for r in batch["results"]:
+        writer.writerow({
+            "batch_id": batch_id,
+            "created_at": batch["created_at"],
+            "job_id": batch["job_id"],
+            "candidate_id": r["candidate_id"],
+            "total_before": r["total_before"],
+            "total_after": r["total_after"],
+            "delta": r["delta"],
+            "flag_types": "|".join(r.get("flags", [])),
+        })
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={batch_id}.csv"}
+    )
 
 # uvicorn app.main:app --reload --port 8000
