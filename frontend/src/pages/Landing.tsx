@@ -1,15 +1,15 @@
 // src/pages/Landing.tsx
 import React, { useState } from "react";
 import { motion } from "framer-motion";
-import { createJob, addCandidates, runScoring } from "../lib/api";
 import { Link } from "react-router-dom";
+
+import { createJob, addCandidates, runScoring } from "../lib/api";
 
 import ScoreCard from "../components/ScoreCard";
 import ViewerToggle from "../components/ViewerToggle";
 import type { ViewerMode } from "../lib/viewer";
 import { asFlagObj } from "../lib/format";
 import type { AnyFlag } from "../lib/format";
-
 
 export default function HirethicsLanding() {
   const [viewerMode, setViewerMode] = useState<ViewerMode>("recruiter");
@@ -37,7 +37,6 @@ export default function HirethicsLanding() {
 
           {/* Right: viewer toggle + buttons */}
           <div className="flex items-center gap-3">
-            {/* Always show on md+ so it never disappears behind breakpoints */}
             <div className="hidden md:block">
               <ViewerToggle value={viewerMode} onChange={setViewerMode} />
             </div>
@@ -59,7 +58,7 @@ export default function HirethicsLanding() {
           </div>
         </div>
 
-        {/* Mobile viewer toggle row (always visible on < md) */}
+        {/* Mobile viewer toggle row */}
         <div className="md:hidden mx-auto max-w-7xl px-6 pb-3">
           <ViewerToggle value={viewerMode} onChange={setViewerMode} />
         </div>
@@ -248,9 +247,6 @@ export default function HirethicsLanding() {
   );
 }
 
-
-
-
 /* ---------- Small components ---------- */
 
 function Badge({ icon, label }: { icon: React.ReactNode; label: string }) {
@@ -304,20 +300,18 @@ function Dot() {
   return <span className="h-2.5 w-2.5 rounded-full bg-slate-300 inline-block" />;
 }
 
-/* --- Demo Box wired to backend, now using ScoreCard + viewerMode --- */
+/* --- Demo Box wired to backend, uses ScoreCard + viewerMode --- */
 function DemoBox({
-    viewerMode,
-    setViewerMode,
-  }: {
-    viewerMode: ViewerMode;
-    setViewerMode: (v: ViewerMode) => void;
-  }) {
+  viewerMode,
+  setViewerMode,
+}: {
+  viewerMode: ViewerMode;
+  setViewerMode: (v: ViewerMode) => void;
+}) {
   const [cv, setCv] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
-
-  
 
   async function handleRun() {
     setLoading(true);
@@ -363,12 +357,12 @@ function DemoBox({
         </div>
       )}
 
-{result && (
+      {result && (
         <div className="mt-6 grid gap-4">
-          {/* Batch header row WITH TOGGLE IN THE MIDDLE */}
+          {/* Batch header row with toggle centered and button on the right */}
           <div className="rounded-xl bg-emerald-50 p-4 ring-1 ring-emerald-200">
             <div className="flex flex-wrap items-center gap-3">
-              {/* left: batch id */}
+              {/* Left: batch id */}
               <div className="min-w-[12rem]">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
                   Batch
@@ -376,13 +370,13 @@ function DemoBox({
                 <div className="mt-1 text-sm text-emerald-900">{result.batch_id}</div>
               </div>
 
-              {/* middle: viewer toggle */}
+              {/* Middle: viewer toggle */}
               <div className="flex items-center">
                 <ViewerToggle value={viewerMode} onChange={setViewerMode} />
               </div>
 
-              {/* right: evaluation button (push to right on wide screens) */}
-              <div className="ms-auto">
+              {/* Right: evaluation button (push far right) */}
+              <div className="ml-auto">
                 <Link
                   to="/evaluation"
                   className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
@@ -394,9 +388,9 @@ function DemoBox({
             </div>
           </div>
 
-          {/* ...the ScoreCards that respect viewerMode... */}
+          {/* ScoreCards (respect viewer mode) */}
           {result.scores?.map((s: any) => {
-            const perCandFlags = (result.ethics_flags || []).filter(
+            const perCandFlags: AnyFlag[] = (result.ethics_flags || []).filter(
               (f: any) => f.candidate_id === s.candidate_id
             );
             const flagsObj = perCandFlags.map(asFlagObj);
