@@ -1,262 +1,207 @@
 // frontend/src/components/ScoreCard.tsx
-import { useState } from "react";
-import type { Criterion, FlagObj } from "../lib/format";
-import {
-  getDebug,
-  getDelta,
-  evidenceCoverage,
-  topContributors,
-  verdict,
-  fmtDelta,
-  pct,
-} from "../lib/format";
+import React from "react";
 import type { ViewerMode } from "../lib/viewer";
-import {
-  visibleFlags,
-  allowDebug,
-  showEvidenceCoverage,
-  showEvidenceSpans,
-  summarizeFlagDetails,
-} from "../lib/viewer";
+import type { FlagObj } from "../lib/format";
 
-type ScoreCardProps = {
+type Criterion = { key: string; score: number; evidence_span: string; rationale?: string };
+
+type Props = {
   candidateId: string;
   total: number;
   by: Criterion[];
-  flags: FlagObj[];
-  viewerMode: ViewerMode; // NEW
+  flags: FlagObj[];         // already mapped with asFlagObj in the parent
+  viewerMode: ViewerMode;   // "recruiter" | "ethics" | "dev"
 };
 
-const titleize = (k: string) =>
-  k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+// ---------- helpers ----------
+function getDelta(flags: FlagObj[]): number | null {
+  // Prefer BLINDING_DELTA/PROXY details.delta; fall back to DEBUG.details.delta
+  for (const f of flags) {
+    if ((f.type === "BLINDING_DELTA" || f.type === "PROXY_EVIDENCE") && f.details?.delta !== undefined) {
+      return Number(f.details.delta);
+    }
+  }
+  const dbg = flags.find(f => f.type === "DEBUG");
+  if (dbg?.details?.delta !== undefined) return Number(dbg.details.delta);
+  return null;
+}
 
-const toneClass = (tone: "good" | "mid" | "warn" | "bad") =>
-  tone === "good"
-    ? "bg-emerald-50 ring-emerald-200 text-emerald-800"
-    : tone === "mid"
-    ? "bg-sky-50 ring-sky-200 text-sky-800"
-    : tone === "warn"
-    ? "bg-amber-50 ring-amber-200 text-amber-900"
-    : "bg-rose-50 ring-rose-200 text-rose-900";
+function prestigeSignals(flags: FlagObj[]): { strict: string[]; generic: string[]; removed: boolean | null } {
+  const p = flags.find(f => f.type === "PROXY_EVIDENCE");
+  if (!p) return { strict: [], generic: [], removed: null };
+  const strict = (p.details?.tokens_strict as string[]) || (p.details?.tokens as string[]) || [];
+  const generic = (p.details?.tokens_generic as string[]) || [];
+  const removed = typeof p.details?.removed_by_blinding === "boolean" ? p.details.removed_by_blinding : null;
+  return { strict, generic, removed };
+}
 
-const sevClass = (s: "info" | "warning") =>
-  s === "warning"
-    ? "bg-amber-50 text-amber-900 ring-amber-200"
-    : "bg-slate-50 text-slate-700 ring-slate-200";
+function missingEvidence(flags: FlagObj[]): string[] {
+  const n = flags.find(f => f.type === "NO_EVIDENCE");
+  return (n?.details?.criteria as string[]) || [];
+}
 
-export default function ScoreCard({ candidateId, total, by, flags, viewerMode }: ScoreCardProps) {
-  const [showInfo, setShowInfo] = useState(false);
-  const [showDebug, setShowDebug] = useState(false);
+function stabilityLabel(delta: number | null, threshold = 0.25) {
+  if (delta == null) return { label: "N/A", tone: "muted" as const };
+  const a = Math.abs(delta);
+  if (a < 0.05) return { label: "Stable", tone: "good" as const };
+  if (a < threshold) return { label: "Slight shift", tone: "warn" as const };
+  return { label: "Unstable", tone: "bad" as const };
+}
 
-  // Respect viewer mode
-  const displayFlags = visibleFlags(flags, viewerMode);
-  const dbg = getDebug(flags); // keep full debug for internal calcs
-  const weights: Record<string, number> = (dbg?.weights as Record<string, number>) || {};
+function toneClass(tone: "good" | "warn" | "bad" | "muted") {
+  switch (tone) {
+    case "good": return "bg-emerald-50 ring-emerald-200 text-emerald-900";
+    case "warn": return "bg-amber-50 ring-amber-200 text-amber-900";
+    case "bad":  return "bg-rose-50 ring-rose-200 text-rose-900";
+    default:     return "bg-slate-50 ring-slate-200 text-slate-700";
+  }
+}
+
+function Chip({ children, tone = "muted" }: { children: React.ReactNode; tone?: "good" | "warn" | "bad" | "muted" }) {
+  return <span className={`rounded-full px-2 py-0.5 text-[11px] ring-1 ${toneClass(tone)}`}>{children}</span>;
+}
+
+// ---------- component ----------
+export default function ScoreCard({ candidateId, total, by, flags, viewerMode }: Props) {
   const delta = getDelta(flags);
-  const hasWarn = displayFlags.some((f) => f.severity === "warning");
-  const v = verdict(total, hasWarn);
-  const cov = evidenceCoverage(flags, by);
-  const contribs = topContributors(by, weights, 2);
+  const { strict, generic, removed } = prestigeSignals(flags);
+  const miss = missingEvidence(flags);
+  const stab = stabilityLabel(delta); // uses default threshold 0.25
 
-  const proxy = flags.find((f) => f.type === "PROXY_EVIDENCE");
-  const blindingNote =
-    delta === 0
-      ? proxy
-        ? proxy.severity === "warning"
-          ? "Prestige signals detected (review), but did not change the total."
-          : "Generic institution mention; no change to score."
-        : "No change under blinding."
-      : delta > 0
-      ? "Total decreased after blinding (possible prestige boost before)."
-      : "Total increased after blinding (prestige removal increased score).";
+  const warnings = flags.filter(f => f.severity === "warning" && f.type !== "DEBUG");
+  const infos    = flags.filter(f => f.severity === "info" && f.type !== "DEBUG");
+  const debug    = flags.filter(f => f.type === "DEBUG");
 
-  // Group after filtering
-  const warnings = displayFlags.filter((f) => f.severity === "warning");
-  const infos = displayFlags.filter((f) => f.severity === "info");
-  const debugFlags = allowDebug(viewerMode) ? flags.filter((f) => f.type === "DEBUG") : [];
+  const hasPrestige = strict.length > 0 || generic.length > 0;
 
   return (
     <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
-      {/* HEADER */}
-      <div className="flex items-center justify-between">
+      {/* header */}
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-xs text-slate-500">Candidate</div>
-          <div className="font-semibold text-slate-900">{candidateId}</div>
+          <div className="text-xs uppercase text-slate-500">Candidate</div>
+          <div className="text-sm font-semibold text-slate-900">{candidateId}</div>
         </div>
-        <span className={`text-xs rounded-full px-2 py-0.5 ring-1 ${toneClass(v.tone)}`}>
-          {v.label}
-        </span>
+        <div className="text-right">
+          <div className="text-xs uppercase text-slate-500">Total</div>
+          <div className="text-lg font-semibold text-emerald-700">{total}</div>
+        </div>
       </div>
 
-      <div className="mt-2 text-3xl font-bold tracking-tight">{total.toFixed(2)}</div>
-
-      {/* BLINDING IMPACT */}
-      <div className="mt-3 rounded-lg bg-slate-50 p-3 ring-1 ring-slate-200">
-        <div className="text-xs uppercase tracking-wide text-slate-500">Blinding impact</div>
-        <div className="mt-1 text-sm text-slate-800">
-          Δ {fmtDelta(delta)} — {blindingNote}
-        </div>
-        {!!proxy?.details?.tokens_strict?.length && viewerMode !== "recruiter" && (
-          <div className="mt-1 text-xs text-slate-600">
-            Tokens: {proxy.details.tokens_strict.join(", ")}
-          </div>
+      {/* summary chips differ per mode */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {/* Stability */}
+        {viewerMode !== "dev" && (
+          <Chip tone={stab.tone}>
+            {stab.label}{delta != null && (delta > 0 ? ` (+${delta})` : delta < 0 ? ` (${delta})` : "")}
+          </Chip>
+        )}
+        {/* Brand / proxy */}
+        {viewerMode !== "dev" && hasPrestige && (
+          <Chip tone={removed ? "good" : "warn"}>
+            Brand influence {removed === true ? "removed by blinding" : removed === false ? "present after blinding" : ""}
+          </Chip>
+        )}
+        {viewerMode === "ethics" && miss.length > 0 && (
+          <Chip tone="warn">Missing evidence: {miss.join(", ")}</Chip>
+        )}
+        {viewerMode === "dev" && (
+          <>
+            <Chip tone="muted">warnings: {warnings.length}</Chip>
+            <Chip tone="muted">infos: {infos.length}</Chip>
+          </>
         )}
       </div>
 
-      {/* EVIDENCE COVERAGE (hidden for recruiter) */}
-      {showEvidenceCoverage(viewerMode) && (
-        <div className="mt-3">
-          <div className="flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
-            <span>Evidence coverage</span>
-            <span className="text-slate-700">{pct(cov.pct)}</span>
+      {/* criteria list */}
+      <ul className="mt-4 grid md:grid-cols-2 gap-2 text-sm text-slate-700">
+        {by.map((c) => (
+          <li key={c.key} className="rounded-md bg-slate-50 p-3 ring-1 ring-slate-200">
+            <div className="text-slate-900 font-medium">
+              {c.key} — {c.score}
+            </div>
+            <div className="mt-1">
+              <span className="font-semibold">Evidence:</span>{" "}
+              {viewerMode === "recruiter" ? c.evidence_span : c.evidence_span}
+            </div>
+            {viewerMode !== "recruiter" && c.rationale && (
+              <div className="mt-1 text-slate-500">{c.rationale}</div>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {/* mode-specific sections */}
+      {viewerMode === "recruiter" && (
+        <div className="mt-4 flex items-center justify-between">
+          <div className="text-xs text-slate-500">
+            {hasPrestige ? "Brand tokens were detected but blinding neutralized them." : "No brand influence detected."}
           </div>
-          <div className="mt-1 h-2 w-full overflow-hidden rounded bg-slate-100">
-            <div className="h-2 bg-slate-900" style={{ width: `${cov.pct}%` }} />
-          </div>
-          <div className="mt-1 text-xs text-slate-600">
-            <span className="mr-3">Strong: {cov.strong}</span>
-            <span className="mr-3">Weak: {cov.weak}</span>
-            <span>Missing: {cov.miss}</span>
+          <div className="text-sm text-slate-800">
+            <span className="font-medium">Next step:</span>{" "}
+            {hasPrestige ? "Focus interview on recent hands-on work, not school/brand." : "Proceed with structured interview on rubric areas."}
           </div>
         </div>
       )}
 
-      {/* TOP CONTRIBUTORS */}
-      <div className="mt-3">
-        <div className="text-xs uppercase tracking-wide text-slate-500">Top contributors</div>
-        <div className="mt-1 flex flex-wrap gap-1">
-          {contribs.map((c) => (
-            <span
-              key={c.key}
-              className="rounded-full bg-slate-50 px-2 py-0.5 text-[11px] ring-1 ring-slate-200"
-              title={`weight ${c.w} × score ${c.score}`}
-            >
-              {titleize(c.key)} · {(c.w * c.score).toFixed(2)}
-            </span>
-          ))}
-          {contribs.length === 0 && (
-            <span className="text-xs text-slate-500">No weighted rubric provided.</span>
-          )}
-        </div>
-      </div>
-
-      {/* PER-CRITERION DETAIL */}
-      <div className="mt-4 space-y-3">
-        {by.map((c) => (
-          <div key={c.key} className="rounded-lg border border-slate-200 p-3">
-            <div className="flex items-center justify-between">
-              <div className="font-medium text-slate-900">{titleize(c.key)}</div>
-              <div className="text-sm font-semibold">{c.score.toFixed(1)}</div>
+      {viewerMode === "ethics" && (
+        <div className="mt-4 grid gap-3">
+          {/* Delta row */}
+          <div className={`rounded-lg p-3 ring-1 ${toneClass(stab.tone)}`}>
+            <div className="text-xs uppercase">Blinding delta</div>
+            <div className="text-sm font-semibold">
+              {delta == null ? "—" : delta > 0 ? `+${delta}` : String(delta)}
             </div>
-            <div className="mt-1 text-sm text-slate-700">
-              <span className="font-medium">Evidence: </span>
-              {showEvidenceSpans(viewerMode) ? (
-                c.evidence_span || <span className="italic text-slate-500">—</span>
-              ) : (
-                <span className="italic text-slate-500">Hidden in recruiter mode</span>
+          </div>
+
+          {/* Prestige details */}
+          {hasPrestige && (
+            <div className="rounded-lg bg-slate-50 p-3 ring-1 ring-slate-200">
+              <div className="text-xs uppercase text-slate-600 mb-1">Proxy / prestige tokens</div>
+              {strict.length > 0 && (
+                <div className="text-sm"><span className="font-medium">Strict:</span> {strict.join(", ")}</div>
+              )}
+              {generic.length > 0 && (
+                <div className="text-sm"><span className="font-medium">Generic:</span> {generic.join(", ")}</div>
+              )}
+              {removed !== null && (
+                <div className="text-xs text-slate-500 mt-1">
+                  {removed ? "Removed by blinding." : "Persisted after blinding."}
+                </div>
               )}
             </div>
-            {viewerMode !== "recruiter" && (
-              <div className="mt-1 text-xs text-slate-600">{c.rationale}</div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* FLAGS */}
-      <div className="mt-4">
-        <div className="text-xs uppercase tracking-wide text-slate-500">Ethics flags</div>
-
-        {/* Warnings expanded */}
-        <div className="mt-2 space-y-2">
-          {warnings.map((f, idx) => {
-            const details = summarizeFlagDetails(f, viewerMode);
-            return (
-              <div key={`warn-${idx}`} className="rounded-md border border-amber-200 bg-amber-50 p-2">
-                <div className="flex items-center gap-2">
-                  <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${sevClass("warning")}`}>
-                    {f.type}
-                  </span>
-                  <span className="text-xs font-medium text-amber-900">{f.message}</span>
-                </div>
-                {details && (
-                  <pre className="mt-1 max-h-40 overflow-auto rounded bg-white p-2 text-xs ring-1 ring-amber-200">
-                    {JSON.stringify(details, null, 2)}
-                  </pre>
-                )}
-              </div>
-            );
-          })}
-          {warnings.length === 0 && (
-            <div className="text-xs text-slate-500">No warnings.</div>
           )}
-        </div>
 
-        {/* Info collapsible */}
-        {infos.length > 0 && (
-          <div className="mt-3">
-            <button
-              onClick={() => setShowInfo((s) => !s)}
-              className="text-xs underline underline-offset-2"
-            >
-              {showInfo ? "Hide info" : `Show info (${infos.length})`}
-            </button>
-            {showInfo && (
-              <div className="mt-2 space-y-2">
-                {infos.map((f, idx) => {
-                  const details = summarizeFlagDetails(f, viewerMode);
-                  return (
-                    <div key={`info-${idx}`} className="rounded-md border border-slate-200 bg-slate-50 p-2">
-                      <div className="flex items-center gap-2">
-                        <span className={`rounded-full px-2 py-0.5 text-[11px] ring-1 ${sevClass("info")}`}>
-                          {f.type}
-                        </span>
-                        <span className="text-xs text-slate-700">{f.message}</span>
-                      </div>
-                      {details && (
-                        <pre className="mt-1 max-h-40 overflow-auto rounded bg-white p-2 text-xs ring-1 ring-slate-200">
-                          {JSON.stringify(details, null, 2)}
-                        </pre>
+          {/* Warnings stack (without DEBUG) */}
+          {(warnings.length > 0 || infos.length > 0) && (
+            <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
+              <div className="text-sm font-semibold text-slate-900">Flags</div>
+              <ul className="mt-2 space-y-2">
+                {warnings.concat(infos).map((f, i) => (
+                  <li key={i} className={`rounded-md p-2 ring-1 ${f.severity === "warning" ? "bg-amber-50 ring-amber-200 text-amber-900" : "bg-slate-50 ring-slate-200 text-slate-800"}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] uppercase tracking-wide font-semibold">{f.type}</span>
+                      {f.details?.delta !== undefined && (
+                        <span className="text-xs">Δ {String(f.details.delta)}</span>
                       )}
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Debug collapsible (Dev only) */}
-        {debugFlags.length > 0 && allowDebug(viewerMode) && (
-          <div className="mt-3">
-            <button
-              onClick={() => setShowDebug((s) => !s)}
-              className="text-xs underline underline-offset-2"
-            >
-              {showDebug ? "Hide debug" : `Show debug (${debugFlags.length})`}
-            </button>
-            {showDebug && (
-              <div className="mt-2 space-y-2">
-                {debugFlags.map((f, idx) => (
-                  <div key={`dbg-${idx}`} className="rounded-md border border-slate-200 bg-slate-50 p-2">
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] ring-1 ring-slate-200">
-                        DEBUG
-                      </span>
-                      <span className="text-xs text-slate-700">{f.message}</span>
-                    </div>
-                    {f.details && (
-                      <pre className="mt-1 max-h-60 overflow-auto rounded bg-white p-2 text-xs ring-1 ring-slate-200">
-                        {JSON.stringify(f.details, null, 2)}
-                      </pre>
-                    )}
-                  </div>
+                    <div className="text-sm mt-0.5">{f.message}</div>
+                  </li>
                 ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {viewerMode === "dev" && (
+        <div className="mt-4">
+          <div className="text-xs uppercase text-slate-600">Debug details</div>
+          <pre className="mt-2 text-xs bg-slate-50 ring-1 ring-slate-200 rounded p-2 whitespace-pre-wrap">
+            {JSON.stringify(flags, null, 2)}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
