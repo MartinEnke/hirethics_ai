@@ -4,29 +4,64 @@ import { motion } from "framer-motion";
 import { createJob, addCandidates, runScoring } from "../lib/api";
 import { Link } from "react-router-dom";
 
+import ScoreCard from "../components/ScoreCard";
+import ViewerToggle from "../components/ViewerToggle";
+import type { ViewerMode } from "../lib/viewer";
+import { asFlagObj } from "../lib/format";
+import type { AnyFlag } from "../lib/format";
+
+
 export default function HirethicsLanding() {
+  const [viewerMode, setViewerMode] = useState<ViewerMode>("recruiter");
+
   return (
     <div className="min-h-screen bg-gray-50 text-slate-800">
       {/* Nav */}
       <header className="sticky top-0 z-30 backdrop-blur bg-white/70 border-b border-slate-200">
-        <div className="mx-auto max-w-7xl px-6 py-4 flex items-center justify-between">
+        <div className="mx-auto max-w-7xl px-6 py-3.5 flex items-center justify-between gap-4">
+          {/* Left: brand */}
           <div className="flex items-center gap-3">
             <Logo />
             <span className="text-xl font-semibold tracking-tight">
               Hirethics <span className="text-emerald-600">AI</span>
             </span>
           </div>
+
+          {/* Center nav */}
           <nav className="hidden md:flex items-center gap-6 text-sm">
             <a href="#how" className="hover:text-slate-900 text-slate-600">How it works</a>
             <a href="#features" className="hover:text-slate-900 text-slate-600">Features</a>
             <a href="#demo" className="hover:text-slate-900 text-slate-600">Demo</a>
             <a href="#trust" className="hover:text-slate-900 text-slate-600">Trust</a>
           </nav>
+
+          {/* Right: viewer toggle + buttons */}
           <div className="flex items-center gap-3">
-            <a href="#demo" className="px-4 py-2 rounded-xl border border-slate-300 text-sm hover:bg-white">Try Demo</a>
-            <a href="#contact" className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-800">Get in touch</a>
+            {/* Always show on md+ so it never disappears behind breakpoints */}
+            <div className="hidden md:block">
+              <ViewerToggle value={viewerMode} onChange={setViewerMode} />
+            </div>
+
+            <Link
+              to="/evaluation"
+              className="hidden sm:inline-flex px-4 py-2 rounded-xl bg-white ring-1 ring-slate-300 text-sm font-medium text-slate-900 hover:bg-slate-50"
+              title="Open Evaluation dashboard"
+            >
+              Open Evaluation
+            </Link>
+
+            <a href="#demo" className="px-4 py-2 rounded-xl border border-slate-300 text-sm hover:bg-white">
+              Try Demo
+            </a>
+            <a href="#contact" className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-800">
+              Get in touch
+            </a>
           </div>
-          
+        </div>
+
+        {/* Mobile viewer toggle row (always visible on < md) */}
+        <div className="md:hidden mx-auto max-w-7xl px-6 pb-3">
+          <ViewerToggle value={viewerMode} onChange={setViewerMode} />
         </div>
       </header>
 
@@ -50,6 +85,13 @@ export default function HirethicsLanding() {
                 <a href="#how" className="px-5 py-3 rounded-2xl border border-slate-300 text-slate-700 font-medium hover:bg-white">
                   How it works
                 </a>
+                {/* Mobile-visible Evaluation button */}
+                <Link
+                  to="/evaluation"
+                  className="inline-flex md:hidden px-5 py-3 rounded-2xl bg-white ring-1 ring-slate-300 text-slate-900 font-medium hover:bg-slate-50"
+                >
+                  Open Evaluation
+                </Link>
               </div>
               <div className="mt-6 flex items-center gap-4 text-sm text-slate-500">
                 <Badge icon={<ShieldIcon />} label="Bias audit built-in" />
@@ -125,7 +167,7 @@ export default function HirethicsLanding() {
           </div>
         </section>
 
-        {/* Features (full-bleed stripe) */}
+        {/* Features */}
         <section id="features" className="bg-white border-y border-slate-200 -mx-6 px-6 py-16">
           <h3 className="text-2xl font-semibold text-slate-900">What makes Hirethics different</h3>
           <div className="mt-8 grid gap-6 md:grid-cols-3">
@@ -137,35 +179,39 @@ export default function HirethicsLanding() {
 
         {/* Demo */}
         <section id="demo" className="py-16">
-  <div className="grid lg:grid-cols-2 gap-10 items-center">
-    <div>
-      <h3 className="text-2xl font-semibold text-slate-900">Try a quick demo</h3>
-      <p className="mt-3 text-slate-600">
-        Paste a sample CV to see a mock score with evidence and an example ethics flag.
-        The full app supports batch scoring, evaluation metrics, and PDF exports.
-      </p>
-      <div className="mt-6 flex gap-3">
-        <a href="#demo-box" className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-medium hover:bg-slate-800">
-          Open Interactive Demo
-        </a>
-        <a href="http://localhost:8000/docs" target="_blank" rel="noreferrer"
-           className="px-5 py-3 rounded-2xl border border-slate-300 text-slate-700 font-medium hover:bg-white">
-          View API Docs
-        </a>
-      </div>
-      <br />
-      <Link
-    to="/evaluation"
-    className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 ring-1 ring-slate-300 hover:bg-slate-50"
-  >
-    Open Evaluation
-  </Link>
-    </div>
-    <DemoBox />
-  </div>
-</section>
+          <div className="grid lg:grid-cols-2 gap-10 items-center">
+            <div>
+              <h3 className="text-2xl font-semibold text-slate-900">Try a quick demo</h3>
+              <p className="mt-3 text-slate-600">
+                Paste a sample CV to see a mock score with evidence and an example ethics flag.
+                The full app supports batch scoring, evaluation metrics, and PDF exports.
+              </p>
+              <div className="mt-6 flex gap-3">
+                <a href="#demo-box" className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-medium hover:bg-slate-800">
+                  Open Interactive Demo
+                </a>
+                <a
+                  href="http://localhost:8000/docs"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-5 py-3 rounded-2xl border border-slate-300 text-slate-700 font-medium hover:bg-white"
+                >
+                  View API Docs
+                </a>
+                <Link
+                  to="/evaluation"
+                  className="px-5 py-3 rounded-2xl bg-white ring-1 ring-slate-300 text-slate-900 font-medium hover:bg-slate-50"
+                >
+                  Open Evaluation
+                </Link>
+              </div>
+            </div>
 
-        {/* Trust (full-bleed stripe) */}
+            <DemoBox viewerMode={viewerMode} setViewerMode={setViewerMode} />
+          </div>
+        </section>
+
+        {/* Trust */}
         <section id="trust" className="bg-white -mx-6 px-6 py-16">
           <h3 className="text-2xl font-semibold text-slate-900">Compliance & Trust</h3>
           <p className="mt-2 text-slate-600 max-w-3xl">
@@ -201,6 +247,9 @@ export default function HirethicsLanding() {
     </div>
   );
 }
+
+
+
 
 /* ---------- Small components ---------- */
 
@@ -255,12 +304,20 @@ function Dot() {
   return <span className="h-2.5 w-2.5 rounded-full bg-slate-300 inline-block" />;
 }
 
-/* --- Demo Box wired to backend --- */
-function DemoBox() {
+/* --- Demo Box wired to backend, now using ScoreCard + viewerMode --- */
+function DemoBox({
+    viewerMode,
+    setViewerMode,
+  }: {
+    viewerMode: ViewerMode;
+    setViewerMode: (v: ViewerMode) => void;
+  }) {
   const [cv, setCv] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
+
+  
 
   async function handleRun() {
     setLoading(true);
@@ -281,8 +338,6 @@ function DemoBox() {
   }
 
   return (
-
-    
     <div id="demo-box" className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
       <label className="text-sm font-medium text-slate-700">Sample CV text</label>
       <textarea
@@ -303,102 +358,59 @@ function DemoBox() {
       </div>
 
       {error && (
-        <div className="mt-4 rounded-lg bg-rose-50 text-rose-800 text-sm p-3 ring-1 ring-rose-200">{error}</div>
+        <div className="mt-4 rounded-lg bg-rose-50 text-rose-800 text-sm p-3 ring-1 ring-rose-200">
+          {error}
+        </div>
       )}
 
-      {result && (
+{result && (
         <div className="mt-6 grid gap-4">
+          {/* Batch header row WITH TOGGLE IN THE MIDDLE */}
           <div className="rounded-xl bg-emerald-50 p-4 ring-1 ring-emerald-200">
-            <div className="text-xs font-semibold uppercase text-emerald-700">Batch</div>
-            <div className="mt-1 text-sm text-emerald-900">{result.batch_id}</div>
-          </div>
-
-          <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
-            <div className="text-sm font-semibold text-slate-900">Scores</div>
-            <div className="mt-2 space-y-3">
-              {result.scores?.map((s: any) => (
-                <div key={s.candidate_id} className="rounded-lg bg-slate-50 p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="font-medium">{s.candidate_id}</div>
-                    <div className="text-emerald-700 font-semibold">{s.total}</div>
-                  </div>
-                  <ul className="mt-2 grid md:grid-cols-2 gap-2 text-sm text-slate-700">
-                    {s.by_criterion?.map((c: any) => (
-                      <li key={c.key} className="rounded-md bg-white p-2 ring-1 ring-slate-200">
-                        <div className="text-slate-900 font-medium">
-                          {c.key} — {c.score}
-                        </div>
-                        <div className="text-slate-600">
-                          <span className="font-semibold">Evidence:</span> {c.evidence_span}
-                        </div>
-                        <div className="text-slate-500">{c.rationale}</div>
-                      </li>
-                    ))}
-                  </ul>
+            <div className="flex flex-wrap items-center gap-3">
+              {/* left: batch id */}
+              <div className="min-w-[12rem]">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                  Batch
                 </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
-  <div className="text-sm font-semibold text-slate-900">Ethics flags</div>
-
-  {(!result?.ethics_flags || result.ethics_flags.length === 0) ? (
-    <div className="mt-2 text-sm text-slate-500">No flags returned.</div>
-  ) : (
-    <ul className="mt-2 space-y-2">
-      {result.ethics_flags.map((f: any, i: number) => {
-        const sevIsWarn = String(f.severity).toLowerCase() === "warning";
-        const baseBox =
-          sevIsWarn
-            ? "bg-amber-50 ring-amber-200 text-amber-900"
-            : "bg-slate-50 ring-slate-200 text-slate-800";
-
-        return (
-          <li key={i} className={`rounded-md p-3 ring-1 ${baseBox}`}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold uppercase tracking-wide">{f.type}</span>
-                <span className={`text-[10px] uppercase rounded-full px-2 py-0.5 ${
-                  sevIsWarn ? "bg-amber-200 text-amber-900" : "bg-slate-200 text-slate-700"
-                }`}>
-                  {f.severity}
-                </span>
-
-                {/* extra badge if proxy was removed by blinding */}
-                {f.type === "PROXY_EVIDENCE" && f?.details?.removed_by_blinding === true && (
-                  <span className="text-[10px] uppercase rounded-full px-2 py-0.5 bg-emerald-200 text-emerald-900">
-                    removed by blinding
-                  </span>
-                )}
+                <div className="mt-1 text-sm text-emerald-900">{result.batch_id}</div>
               </div>
 
-              {/* show delta badge when present */}
-              {f?.details?.delta !== undefined && (
-                <span className="text-xs text-slate-700">Δ {f.details.delta}</span>
-              )}
+              {/* middle: viewer toggle */}
+              <div className="flex items-center">
+                <ViewerToggle value={viewerMode} onChange={setViewerMode} />
+              </div>
+
+              {/* right: evaluation button (push to right on wide screens) */}
+              <div className="ms-auto">
+                <Link
+                  to="/evaluation"
+                  className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                  title="Open Evaluation dashboard"
+                >
+                  Open Evaluation
+                </Link>
+              </div>
             </div>
+          </div>
 
-            <div className="mt-1 text-sm">{f.message}</div>
-
-            {/* pretty-print the JSON details */}
-            {f.details && (
-              <details className="mt-2">
-                <summary className="cursor-pointer text-xs text-slate-600 hover:text-slate-800">
-                  Details
-                </summary>
-                <pre className="mt-2 text-xs bg-white/70 ring-1 ring-slate-200 rounded p-2 whitespace-pre-wrap">
-                  {JSON.stringify(f.details, null, 2)}
-                </pre>
-              </details>
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  )}
-</div>
-
+          {/* ...the ScoreCards that respect viewerMode... */}
+          {result.scores?.map((s: any) => {
+            const perCandFlags = (result.ethics_flags || []).filter(
+              (f: any) => f.candidate_id === s.candidate_id
+            );
+            const flagsObj = perCandFlags.map(asFlagObj);
+            return (
+              <ScoreCard
+                key={s.candidate_id}
+                candidateId={s.candidate_id}
+                total={s.total}
+                by={s.by_criterion}
+                flags={flagsObj}
+                viewerMode={viewerMode}
+              />
+            );
+          })}
         </div>
       )}
     </div>
