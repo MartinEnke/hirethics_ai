@@ -1,0 +1,71 @@
+{
+  "items": [
+    {
+      "id": "cand_alex_m",
+      "name": "Alex M.",
+      "overall": 86,
+      "tags": ["Backend", "Go", "Fintech"],
+      "highlights": ["5y in fintech", "Led 3 microservices"],
+      "criteria": [
+        {
+          "key": "skills",
+          "label": "Technical Skills",
+          "score": 88,
+          "evidence": [
+            {
+              "quote": "Built and operated Go microservices handling ~50k requests/min in production.",
+              "source": "resume"
+            }
+          ]
+        },
+        { "key": "experience", "label": "Experience", "score": 82 },
+        { "key": "culture", "label": "Culture Fit", "score": 74 },
+        { "key": "leadership", "label": "Leadership", "score": 90 }
+      ],
+      "summary": "Strong backend foundation with proven ownership in high-throughput systems."
+    },
+    {
+      "id": "cand_bella_s",
+      "name": "Bella S.",
+      "overall": 78,
+      "tags": ["Full-stack", "React", "Node"],
+      "highlights": ["Scaled React app to 1M MAU", "Mentored juniors"],
+      "criteria": [
+        { "key": "skills", "label": "Technical Skills", "score": 80 },
+        { "key": "experience", "label": "Experience", "score": 75 },
+        {
+          "key": "culture",
+          "label": "Culture Fit",
+          "score": 85,
+          "evidence": [
+            { "quote": "Initiated bi-weekly knowledge-sharing sessions.", "source": "resume" }
+          ]
+        },
+        { "key": "leadership", "label": "Leadership", "score": 70 }
+      ],
+      "summary": "Well-rounded full-stack engineer with strong collaboration signals."
+    },
+    {
+      "id": "cand_cyrus_k",
+      "name": "Cyrus K.",
+      "overall": 92,
+      "tags": ["Data", "Python", "ML"],
+      "highlights": ["Shipped fraud model ↓ false positives by 23%", "Great stakeholder comms"],
+      "criteria": [
+        { "key": "skills", "label": "Technical Skills", "score": 94 },
+        { "key": "experience", "label": "Experience", "score": 90 },
+        { "key": "culture", "label": "Culture Fit", "score": 88 },
+        {
+          "key": "leadership",
+          "label": "Leadership",
+          "score": 87,
+          "evidence": [
+            { "quote": "Led cross-team model rollout in < 6 weeks.", "source": "resume" }
+          ]
+        }
+      ],
+      "summary": "Top technical bar with measurable impact in ML deployment."
+    }
+  ],
+  "total": 3
+}
