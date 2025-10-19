@@ -10,10 +10,9 @@ import type { ViewerMode } from "../lib/viewer";
 import { asFlagObj } from "../lib/format";
 import type { AnyFlag } from "../lib/format";
 
-// NEW: canonical report typing + local persistence for Evaluation fallback
-import type { ReportPayload } from "../types/report";
-import { saveMockReport } from "../utils/mockStorage";
-
+/** -----------------------
+ *  Landing Page
+ *  ----------------------*/
 export default function HirethicsLanding() {
   const [viewerMode, setViewerMode] = useState<ViewerMode>("recruiter");
 
@@ -267,63 +266,7 @@ function Dot() {
   return <span className="h-2.5 w-2.5 rounded-full bg-slate-300 inline-block" />;
 }
 
-/* ---------------- Helpers for canonical report ---------------- */
-/**
- * Convert whatever "data" (backend or Landing’s mock) into our canonical ReportPayload.
- * This is only for persisting to localStorage so the Evaluation page can always load.
- */
-function toReportPayload(data: any): ReportPayload {
-  const batch_id = data?.batch_id ?? `batch_${Date.now()}`;
-
-  // Prefer backend "candidates", otherwise adapt from Landing's "scores"
-  const sourceList = Array.isArray(data?.candidates) ? data.candidates : (data?.scores || []);
-
-  const candidates = sourceList.map((s: any) => {
-    const candidate_id = s?.candidate_id ?? s?.id ?? `cand_${Math.random().toString(36).slice(2, 8)}`;
-
-    const overallRaw =
-      s?.score?.overall ??
-      s?.overall ??
-      s?.total ??
-      0;
-
-    const overall = typeof overallRaw === "number" ? Number(overallRaw.toFixed(1)) : 0;
-
-    const fairness =
-      (typeof s?.score?.fairness === "number" ? s.score.fairness : null) ??
-      Number(Math.max(50, Math.min(95, overall + 5 + Math.random() * 10)).toFixed(1));
-
-    const transparency =
-      (typeof s?.score?.transparency === "number" ? s.score.transparency : null) ??
-      Number(Math.max(50, Math.min(95, overall - 2 + Math.random() * 12)).toFixed(1));
-
-    // Flags from top-level ethics_flags if present
-    let flags: string[] = [];
-    if (Array.isArray(data?.ethics_flags)) {
-      const match = data.ethics_flags.find((f: any) => f?.candidate_id === candidate_id);
-      if (match?.flags) flags = match.flags;
-    }
-    if (!flags.length && Array.isArray(s?.flags)) flags = s.flags;
-
-    return {
-      candidate_id,
-      score: { overall, fairness, transparency },
-      flags,
-    };
-  });
-
-  return {
-    batch_id,
-    n_candidates: candidates.length,
-    spearman_rho: typeof data?.spearman_rho === "number" ? data.spearman_rho : Number((0.5 + Math.random() * 0.4).toFixed(2)),
-    topk_overlap_count: typeof data?.topk_overlap_count === "number" ? data.topk_overlap_count : Math.min(3, candidates.length),
-    mean_abs_delta: typeof data?.mean_abs_delta === "number" ? data.mean_abs_delta : Number((Math.random() * 3).toFixed(2)),
-    candidates,
-  };
-}
-
 /* ---------------- DemoBox ---------------- */
-/* --- DemoBox with multi-CV support and fallback mock scoring --- */
 function DemoBox({
   viewerMode,
   setViewerMode,
@@ -336,25 +279,115 @@ function DemoBox({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
 
-  // --- Mock scoring for offline/demo mode (kept for Landing display only) ---
-  const mockScoring = (candidate_ids: string[]) => {
+  // --- Mock flag catalog & helpers ---
+  type MockFlag = { label: string; severity: "minor" | "moderate" | "major" };
+  const MOCK_FLAG_CATALOG: MockFlag[] = [
+    { label: "Minor bias detected", severity: "minor" },
+    { label: "Proxy signal suspected: brand", severity: "moderate" },
+    { label: "Instability under blinding", severity: "moderate" },
+    { label: "Large rank shift under counterfactual", severity: "major" },
+  ];
+  function sampleFlags(): MockFlag[] {
+    // ~50% none, 35% one, 15% two
+    const r = Math.random();
+    const n = r < 0.5 ? 0 : r < 0.85 ? 1 : 2;
+    const shuffled = [...MOCK_FLAG_CATALOG].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, n);
+  }
+
+  // --- Mock scoring for offline/demo mode (now with summaries & stability metrics) ---
+  function mockScoring(candidate_ids: string[]) {
+    const scores = candidate_ids.map((id) => ({
+      candidate_id: id,
+      total: Math.floor(60 + Math.random() * 40), // 60–100
+      by_criterion: [
+        { criterion: "System Design", score: Math.floor(20 + Math.random() * 10) },
+        { criterion: "Experience", score: Math.floor(20 + Math.random() * 10) },
+        { criterion: "Skills", score: Math.floor(20 + Math.random() * 10) },
+      ],
+    }));
+
+    // per-candidate flags + severity
+    const perCandFlags = candidate_ids.map((cid) => {
+      const picks = sampleFlags();
+      return { candidate_id: cid, flags: picks.map((p) => p.label), _sev: picks.map((p) => p.severity) };
+    });
+
+    // summaries
+    const flags_by_type: Record<string, number> = {};
+    const flags_by_severity: Record<string, number> = { minor: 0, moderate: 0, major: 0 };
+    perCandFlags.forEach((f) => {
+      (f.flags || []).forEach((label) => {
+        flags_by_type[label] = (flags_by_type[label] || 0) + 1;
+      });
+      (f._sev || []).forEach((sev) => {
+        flags_by_severity[sev] = (flags_by_severity[sev] || 0) + 1;
+      });
+    });
+
+    const batch_id = `batch_mock_${Date.now()}`;
+    const n_candidates = candidate_ids.length;
+
+    // simple demo stability numbers
+    const spearman_rho = +(0.78 + Math.random() * 0.18).toFixed(2);
+    const topKDefault = 5;
+    const overlap = Math.min(3, n_candidates);
+    const topk_overlap_count = overlap;
+    const topk_overlap_ratio = +(overlap / Math.min(topKDefault, n_candidates || 1)).toFixed(2);
+    const mean_abs_delta = +(Math.random() * 2 + 0.6).toFixed(2);
+
     return {
-      batch_id: `batch_mock_${Date.now()}`,
-      scores: candidate_ids.map((id, i) => ({
-        candidate_id: id,
-        total: Math.floor(60 + Math.random() * 40), // random 60-100
-        by_criterion: [
-          { criterion: "System Design", score: Math.floor(20 + Math.random() * 10) },
-          { criterion: "Experience", score: Math.floor(20 + Math.random() * 10) },
-          { criterion: "Skills", score: Math.floor(20 + Math.random() * 10) },
-        ],
-      })),
-      ethics_flags: candidate_ids.map(id => ({
-        candidate_id: id,
-        flags: ["Minor bias detected"]
-      })),
+      batch_id,
+      scores,
+      ethics_flags: perCandFlags.map(({ candidate_id, flags }) => ({ candidate_id, flags })),
+      flags_by_type,
+      flags_by_severity,
+      n_candidates,
+      spearman_rho,
+      topk_overlap_count,
+      topk_overlap_ratio,
+      mean_abs_delta,
     };
-  };
+  }
+
+  // Convert the above mock format into a canonical ReportPayload for Evaluation offline cache
+  function toCanonicalReport(mock: any) {
+    // fabricate fairness/transparency from distribution around total
+    const candidates = (mock.scores || []).map((s: any) => {
+      const fairness = clamp(Math.round((s.total - 5) + Math.random() * 10), 50, 95);
+      const transparency = clamp(Math.round((s.total - 8) + Math.random() * 12), 50, 95);
+      const candidate_id = s.candidate_id;
+      // find flags
+      const found = (mock.ethics_flags || []).find((f: any) => f.candidate_id === candidate_id);
+      return {
+        candidate_id,
+        score: {
+          overall: s.total,
+          fairness,
+          transparency,
+        },
+        flags: found?.flags || [],
+      };
+    });
+
+    const canonical = {
+      batch_id: mock.batch_id,
+      n_candidates: mock.n_candidates ?? candidates.length,
+      spearman_rho: mock.spearman_rho,
+      topk_overlap_count: mock.topk_overlap_count,
+      topk_overlap_ratio: mock.topk_overlap_ratio,
+      mean_abs_delta: mock.mean_abs_delta,
+      candidates,
+      // keep summaries for Evaluation
+      flags_by_type: mock.flags_by_type,
+      flags_by_severity: mock.flags_by_severity,
+    };
+    return canonical;
+  }
+
+  function clamp(n: number, lo: number, hi: number) {
+    return Math.max(lo, Math.min(hi, n));
+  }
 
   const handleRun = async () => {
     setLoading(true);
@@ -362,31 +395,38 @@ function DemoBox({
 
     try {
       const { job_id } = await createJob();
-      const cvsToSend = cvs.filter(cv => cv.trim()).slice(0, 5);
+      const cvsToSend = cvs.filter((cv) => cv.trim()).slice(0, 5);
       if (!cvsToSend.length) {
         setError("Please enter at least one CV.");
         setLoading(false);
         return;
       }
 
-      let data: any;
+      let data;
       try {
-        // Real backend payload
-        const candidatesPayload = cvsToSend.map(cv_text => ({ cv_text }));
+        // Real backend payload expects [{ cv_text }]
+        const candidatesPayload = cvsToSend.map((cv_text) => ({ cv_text }));
         const { candidate_ids } = await addCandidates(job_id, candidatesPayload);
         data = await runScoring(job_id, candidate_ids);
       } catch {
-        // fallback mock scoring (Landing-only)
+        // fallback mock scoring
         const candidate_ids = cvsToSend.map((_, i) => `cand_mock_${i}`);
         data = mockScoring(candidate_ids);
       }
 
-      // Normalize & persist a canonical report for the Evaluation page
-      const report = toReportPayload(data);
-      localStorage.setItem("latestBatchId", report.batch_id);
-      saveMockReport(report);
+      // Persist for Evaluation page (both legacy + canonical per-batch)
+      localStorage.setItem("demoBatch", JSON.stringify(data));
+      localStorage.setItem("latestBatchId", data.batch_id);
 
-      // Preserve your existing Landing display (ScoreCard expects original "data")
+      // Save canonical report for offline Evaluation (report:<batch_id>)
+      try {
+        const canonical = toCanonicalReport(data);
+        localStorage.setItem(`report:${data.batch_id}`, JSON.stringify(canonical));
+      } catch (e) {
+        // non-fatal
+        console.warn("Failed to persist canonical report", e);
+      }
+
       setResult(data);
     } catch (e: any) {
       setError(e?.message || "Request failed. Is the backend running on http://localhost:8000?");
@@ -396,7 +436,7 @@ function DemoBox({
   };
 
   const updateCv = (index: number, value: string) => {
-    setCvs(prev => {
+    setCvs((prev) => {
       const next = [...prev];
       next[index] = value;
       return next;
@@ -404,11 +444,11 @@ function DemoBox({
   };
 
   const addCvField = () => {
-    if (cvs.length < 5) setCvs(prev => [...prev, ""]);
+    if (cvs.length < 5) setCvs((prev) => [...prev, ""]);
   };
 
   const removeCvField = (index: number) => {
-    setCvs(prev => prev.filter((_, i) => i !== index));
+    setCvs((prev) => prev.filter((_, i) => i !== index));
   };
 
   return (
@@ -421,7 +461,7 @@ function DemoBox({
               className="mt-2 w-full h-24 rounded-xl border border-slate-300 p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
               placeholder={`CV ${i + 1} text...`}
               value={cv}
-              onChange={e => updateCv(i, e.target.value)}
+              onChange={(e) => updateCv(i, e.target.value)}
             />
             {cvs.length > 1 && (
               <button
@@ -478,7 +518,6 @@ function DemoBox({
             const perCandFlags: AnyFlag[] = (result.ethics_flags || [])
               .filter((f: any) => f.candidate_id === s.candidate_id)
               .map(asFlagObj);
-
             return (
               <ScoreCard
                 key={s.candidate_id}
@@ -503,4 +542,19 @@ function TrailIcon({ className = "h-5 w-5" }: { className?: string }) { return <
 function ScaleIcon() { return <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3v18M6 7l-4 6h8l-4-6zm12 0l-4 6h8l-4-6zM6 19h12" strokeLinecap="round"/></svg>; }
 function LensIcon() { return <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5" strokeLinecap="round"/></svg>; }
 function HumanIcon() { return <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="7" r="3"/><path d="M5 21c0-4 3-7 7-7s7 3 7 7"/></svg>; }
-function Logo({ small = false }: { small?: boolean }) { return (<div className={`relative ${small ? "h-6 w-6" : "h-8 w-8"}`}><svg viewBox="0 0 48 48" className="h-full w-full"><defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stopColor="#10B981"/><stop offset="100%" stopColor="#1E3A8A"/></linearGradient></defs><rect x="6" y="6" width="36" height="36" rx="10" fill="url(#g)" opacity="0.15"/><path d="M12 30c4-8 8-12 12-12s8 4 12 12" fill="none" stroke="url(#g)" strokeWidth="3" strokeLinecap="round"/><circle cx="24" cy="18" r="3" fill="#10B981"/></svg></div>); }
+function Logo({ small = false }: { small?: boolean }) {
+  return (
+    <div className={`relative ${small ? "h-6 w-6" : "h-8 w-8"}`}>
+      <svg viewBox="0 0 48 48" className="h-full w-full">
+        <defs>
+          <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+            <stop offset="0%" stopColor="#10B981"/><stop offset="100%" stopColor="#1E3A8A"/>
+          </linearGradient>
+        </defs>
+        <rect x="6" y="6" width="36" height="36" rx="10" fill="url(#g)" opacity="0.15"/>
+        <path d="M12 30c4-8 8-12 12-12s8 4 12 12" fill="none" stroke="url(#g)" strokeWidth="3" strokeLinecap="round"/>
+        <circle cx="24" cy="18" r="3" fill="#10B981"/>
+      </svg>
+    </div>
+  );
+}
