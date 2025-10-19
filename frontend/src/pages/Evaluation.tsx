@@ -58,6 +58,37 @@ function MiniViewerToggle({
   );
 }
 
+/* ---------- flag knowledge base for rationale + action ---------- */
+const FLAG_KB: Record<
+  string,
+  { title: string; rationale: string; action: string; severity?: "minor" | "moderate" | "major" }
+> = {
+  "Minor bias detected": {
+    title: "Minor bias detected",
+    rationale: "Small, non-deterministic rank wobble observed under blinding/counterfactual checks.",
+    action: "Proceed, but double-check evidence quotes; prioritize structured interview to validate.",
+    severity: "minor",
+  },
+  "Proxy signal suspected: brand": {
+    title: "Proxy signal suspected: brand",
+    rationale: "Brand names (schools/companies) appear correlated with score deltas independent of evidence.",
+    action: "Temporarily mask brand names and re-run; emphasize concrete achievements in screening.",
+    severity: "moderate",
+  },
+  "Instability under blinding": {
+    title: "Instability under blinding",
+    rationale: "Notable rank shift when sensitive tokens (e.g., names) are blinded — suggests fragile features.",
+    action: "Blind sensitive tokens in reviewer workflow; seek more task-relevant evidence.",
+    severity: "moderate",
+  },
+  "Large rank shift under counterfactual": {
+    title: "Large rank shift under counterfactual",
+    rationale: "Candidate rank changes significantly under plausible attribute swaps (counterfactual stress).",
+    action: "Require human review and a second signal (work sample) before proceeding.",
+    severity: "major",
+  },
+};
+
 export default function Evaluation() {
   const [batchId, setBatchId] = useState("");
   const [topK, setTopK] = useState<number | undefined>(undefined);
@@ -122,12 +153,12 @@ export default function Evaluation() {
   const sortedCandidates: CandidateScore[] =
     data?.candidates?.slice().sort((a: CandidateScore, b: CandidateScore) => (b.total_after ?? 0) - (a.total_after ?? 0)) || [];
 
-  // Recommendation (top candidate + natural-language “why”)
+  // Recommendation (top candidate + natural-language “why” + name)
   const recommendation = useMemo(() => {
     if (!sortedCandidates.length) return null;
-    const top = sortedCandidates[0];
+    const top: any = sortedCandidates[0];
     const flagsForTop: AnyFlag[] = (data?.ethics_flags || []).filter(
-      (f: any) => f.candidate_id === (top as any).candidate_id
+      (f: any) => f.candidate_id === top.candidate_id
     );
 
     // choose 2 strongest criteria by score
@@ -143,9 +174,10 @@ export default function Evaluation() {
       reasons.push(`review flags: ${flagsForTop[0].flags.join(", ")}`);
     }
 
+    const name = top.display_name || top.candidate_id;
     return {
-      candidateId: (top as any).candidate_id,
-      overall: fmt1((top as any).total_after ?? 0),
+      candidateLabel: name,
+      overall: fmt1(top.total_after ?? 0),
       reasons,
     };
   }, [sortedCandidates, data]);
@@ -176,8 +208,7 @@ export default function Evaluation() {
         label: "Rank stability (ρ)",
         value: v,
         tone: v >= 0.9 ? "good" : v >= 0.8 ? "warn" : "bad",
-        tooltip:
-          "Spearman rank correlation vs. a reference (previous or blinded). Higher = more stable ranking.",
+        tooltip: "Spearman rank correlation vs. a reference (previous or blinded). Higher = more stable ranking.",
         hint: "(higher is better)",
         desc: "Similarity between this ranking and a reference run; shows how stable the shortlist is.",
       });
@@ -331,7 +362,7 @@ export default function Evaluation() {
               </span>
             </div>
             <div className="mt-2 text-slate-900">
-              Candidate <span className="font-semibold">{recommendation.candidateId}</span>{" "}
+              Candidate <span className="font-semibold">{recommendation.candidateLabel}</span>{" "}
               appears to be the best fit (overall {recommendation.overall}).
             </div>
             <ul className="mt-1 text-sm text-emerald-900 list-disc pl-5">
@@ -360,39 +391,81 @@ export default function Evaluation() {
             </div>
 
             {/* Flags overview with helper lines */}
-<div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-  <div>
-    <div className="mb-1 text-xs text-slate-500">
-      Grouped by category (e.g., proxy signals, instability, brand influence).
-    </div>
-    <FlagSummary title="Flags by type" flags={data?.flags_by_type} />
-  </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div>
+                <div className="mb-1 text-xs text-slate-500">
+                  Grouped by category (e.g., proxy signals, instability, brand influence).
+                </div>
+                <FlagSummary title="Flags by type" flags={data?.flags_by_type} />
+              </div>
 
-  <div>
-    <div className="mb-1 text-xs text-slate-500">Grouped by severity (if provided by backend).</div>
-    {data?.flags_by_severity && Object.keys(data.flags_by_severity).length > 0 ? (
-      <FlagSummary title="Flags by severity" flags={data.flags_by_severity} />
-    ) : (
-      <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200 text-sm text-slate-500">
-        No severity data provided.
-      </div>
-    )}
-  </div>
-</div>
+              <div>
+                <div className="mb-1 text-xs text-slate-500">Grouped by severity (if provided by backend).</div>
+                {data?.flags_by_severity && Object.keys(data.flags_by_severity).length > 0 ? (
+                  <FlagSummary title="Flags by severity" flags={data.flags_by_severity} />
+                ) : (
+                  <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200 text-sm text-slate-500">
+                    No severity data provided.
+                  </div>
+                )}
+              </div>
+            </div>
 
-            {/* Candidates */}
+            {/* Candidates + ethics review helper */}
             <div className="grid grid-cols-1 gap-4 mt-4">
               {sortedCandidates.map((cand: CandidateScore) => {
-                const candFlags: AnyFlag[] = (data.ethics_flags || []).filter(
+                const candFlagsRaw: AnyFlag[] = (data.ethics_flags || []).filter(
                   (f: any) => f.candidate_id === (cand as any).candidate_id
                 );
+                const labels: string[] = (candFlagsRaw?.[0]?.flags as string[]) || [];
+                const enriched = labels
+                  .map((label) => FLAG_KB[label])
+                  .filter(Boolean) as Array<{ title: string; rationale: string; action: string; severity?: string }>;
+
                 return (
-                  <AdvancedScoreCard
-                    key={(cand as any).candidate_id}
-                    candidate={cand}
-                    flags={candFlags}
-                    viewerMode={viewerMode}
-                  />
+                  <div key={(cand as any).candidate_id} className="grid gap-2">
+                    <AdvancedScoreCard
+                      candidate={cand}
+                      flags={candFlagsRaw}
+                      viewerMode={viewerMode}
+                    />
+
+                    {labels.length > 0 && (
+                      <div className="rounded-lg bg-white p-4 ring-1 ring-slate-200">
+                        <div className="text-sm font-semibold text-slate-900">Ethics review helper</div>
+                        <ul className="mt-2 space-y-2">
+                          {enriched.length > 0 ? (
+                            enriched.map((f, idx) => (
+                              <li key={idx} className="text-sm text-slate-700">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${
+                                      f.severity === "major"
+                                        ? "bg-rose-50 text-rose-700 ring-rose-200"
+                                        : f.severity === "moderate"
+                                        ? "bg-amber-50 text-amber-700 ring-amber-200"
+                                        : "bg-slate-100 text-slate-700 ring-slate-200"
+                                    }`}
+                                  >
+                                    {f.severity ?? "info"}
+                                  </span>
+                                  <span className="font-medium">{f.title}</span>
+                                </div>
+                                <div className="mt-1 text-xs text-slate-600">
+                                  <em>Why:</em> {f.rationale}
+                                </div>
+                                <div className="text-xs text-slate-600">
+                                  <em>Suggested action:</em> {f.action}
+                                </div>
+                              </li>
+                            ))
+                          ) : (
+                            <li className="text-sm text-slate-500">No standardized rationale available for these flags.</li>
+                          )}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
                 );
               })}
             </div>
@@ -414,28 +487,12 @@ export default function Evaluation() {
         <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
           <div className="text-sm font-semibold text-slate-900">What am I seeing?</div>
           <ul className="mt-2 text-sm text-slate-600 list-disc pl-5 space-y-1">
-            <li>
-              <strong>Rank stability (ρ):</strong> Similarity of rankings vs. a reference (previous or blinded run).
-              ≥0.90 is very stable.
-            </li>
-            <li>
-              <strong>Top-K consistency:</strong> How many candidates remain in the Top-K compared to the reference
-              (shortlist robustness).
-            </li>
-            <li>
-              <strong>Avg. rank shift:</strong> Average positions moved up/down vs. the reference; ≤1 is very stable.
-            </li>
-            <li>
-              <strong>Fairness score:</strong> Robustness of the ranking to <em>sensitive attributes</em> (e.g., names,
-              demographics) via blinding/counterfactual checks. Higher = less influence from non-job signals.
-            </li>
-            <li>
-              <strong>Transparency score:</strong> How well decisions are supported by <em>quoted evidence</em> and
-              clear rationales. Higher = more explainable decisions.
-            </li>
-            <li>
-              <strong>Source:</strong> “Local mock” means demo data cached in your browser (from the Landing run).
-            </li>
+            <li><strong>Rank stability (ρ):</strong> Similarity of rankings vs. a reference (previous or blinded run). ≥0.90 is very stable.</li>
+            <li><strong>Top-K consistency:</strong> How many candidates remain in the Top-K compared to the reference (shortlist robustness).</li>
+            <li><strong>Avg. rank shift:</strong> Average positions moved up/down vs. the reference; ≤1 is very stable.</li>
+            <li><strong>Fairness score:</strong> Robustness of the ranking to <em>sensitive attributes</em> via blinding/counterfactual tests. Higher = less influence from non-job signals.</li>
+            <li><strong>Transparency score:</strong> How well decisions are supported by <em>quoted evidence</em> and clear rationales. Higher = more explainable decisions.</li>
+            <li><strong>Source:</strong> “Local mock” means demo data cached in your browser (from the Landing run).</li>
           </ul>
         </div>
       </div>
@@ -474,7 +531,7 @@ function fromLocalCanonicalToEvaluation(report: ReportPayload, topK?: number, jo
   const k = topK ?? 5;
 
   // Build CandidateScore-like objects from canonical shape
-  const candidates: CandidateScore[] = report.candidates.map((c) => {
+  const candidates: CandidateScore[] = report.candidates.map((c: any) => {
     const total_after = round1(c.score.overall);
     const by_criterion = [
       { criterion: "Fairness", score: round1(c.score.fairness) },
@@ -483,6 +540,7 @@ function fromLocalCanonicalToEvaluation(report: ReportPayload, topK?: number, jo
     return {
       ...( {} as CandidateScore ),
       candidate_id: c.candidate_id,
+      display_name: c.display_name, // keep name if present
       total_after,
       total_before: total_after, // no pre/post delta in mock
       by_criterion,
@@ -490,7 +548,7 @@ function fromLocalCanonicalToEvaluation(report: ReportPayload, topK?: number, jo
   });
 
   // flags list similar to backend shape used by UI
-  const ethics_flags = report.candidates.map((c) => ({
+  const ethics_flags = report.candidates.map((c: any) => ({
     candidate_id: c.candidate_id,
     flags: c.flags ?? [],
   }));
@@ -501,12 +559,14 @@ function fromLocalCanonicalToEvaluation(report: ReportPayload, topK?: number, jo
     acc[f] = (acc[f] || 0) + 1;
     return acc;
   }, {});
-  const flags_by_severity = undefined;
+  const flags_by_severity = report.flags_by_severity ?? undefined;
 
   // mock overlap/shift metrics if missing
   const spearman_rho = typeof report.spearman_rho === "number" ? report.spearman_rho : round2(0.8 + Math.random() * 0.15);
-  const topk_overlap_count = Math.min(k, candidates.length, 3);
-  const topk_overlap_ratio = candidates.length ? topk_overlap_count / Math.min(k, candidates.length) : 0;
+  const topk_overlap_count = typeof report.topk_overlap_count === "number" ? report.topk_overlap_count : Math.min(k, candidates.length, 3);
+  const topk_overlap_ratio = typeof report.topk_overlap_ratio === "number"
+    ? report.topk_overlap_ratio
+    : (candidates.length ? topk_overlap_count / Math.min(k, candidates.length) : 0);
   const mean_abs_delta = typeof report.mean_abs_delta === "number" ? report.mean_abs_delta : round2(Math.random() * 2 + 1);
 
   return {
