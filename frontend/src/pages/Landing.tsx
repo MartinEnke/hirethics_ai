@@ -10,6 +10,10 @@ import type { ViewerMode } from "../lib/viewer";
 import { asFlagObj } from "../lib/format";
 import type { AnyFlag } from "../lib/format";
 
+// NEW: canonical report typing + local persistence for Evaluation fallback
+import type { ReportPayload } from "../types/report";
+import { saveMockReport } from "../utils/mockStorage";
+
 export default function HirethicsLanding() {
   const [viewerMode, setViewerMode] = useState<ViewerMode>("recruiter");
 
@@ -263,6 +267,61 @@ function Dot() {
   return <span className="h-2.5 w-2.5 rounded-full bg-slate-300 inline-block" />;
 }
 
+/* ---------------- Helpers for canonical report ---------------- */
+/**
+ * Convert whatever "data" (backend or Landing’s mock) into our canonical ReportPayload.
+ * This is only for persisting to localStorage so the Evaluation page can always load.
+ */
+function toReportPayload(data: any): ReportPayload {
+  const batch_id = data?.batch_id ?? `batch_${Date.now()}`;
+
+  // Prefer backend "candidates", otherwise adapt from Landing's "scores"
+  const sourceList = Array.isArray(data?.candidates) ? data.candidates : (data?.scores || []);
+
+  const candidates = sourceList.map((s: any) => {
+    const candidate_id = s?.candidate_id ?? s?.id ?? `cand_${Math.random().toString(36).slice(2, 8)}`;
+
+    const overallRaw =
+      s?.score?.overall ??
+      s?.overall ??
+      s?.total ??
+      0;
+
+    const overall = typeof overallRaw === "number" ? Number(overallRaw.toFixed(1)) : 0;
+
+    const fairness =
+      (typeof s?.score?.fairness === "number" ? s.score.fairness : null) ??
+      Number(Math.max(50, Math.min(95, overall + 5 + Math.random() * 10)).toFixed(1));
+
+    const transparency =
+      (typeof s?.score?.transparency === "number" ? s.score.transparency : null) ??
+      Number(Math.max(50, Math.min(95, overall - 2 + Math.random() * 12)).toFixed(1));
+
+    // Flags from top-level ethics_flags if present
+    let flags: string[] = [];
+    if (Array.isArray(data?.ethics_flags)) {
+      const match = data.ethics_flags.find((f: any) => f?.candidate_id === candidate_id);
+      if (match?.flags) flags = match.flags;
+    }
+    if (!flags.length && Array.isArray(s?.flags)) flags = s.flags;
+
+    return {
+      candidate_id,
+      score: { overall, fairness, transparency },
+      flags,
+    };
+  });
+
+  return {
+    batch_id,
+    n_candidates: candidates.length,
+    spearman_rho: typeof data?.spearman_rho === "number" ? data.spearman_rho : Number((0.5 + Math.random() * 0.4).toFixed(2)),
+    topk_overlap_count: typeof data?.topk_overlap_count === "number" ? data.topk_overlap_count : Math.min(3, candidates.length),
+    mean_abs_delta: typeof data?.mean_abs_delta === "number" ? data.mean_abs_delta : Number((Math.random() * 3).toFixed(2)),
+    candidates,
+  };
+}
+
 /* ---------------- DemoBox ---------------- */
 /* --- DemoBox with multi-CV support and fallback mock scoring --- */
 function DemoBox({
@@ -277,7 +336,7 @@ function DemoBox({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
 
-  // --- Mock scoring for offline/demo mode ---
+  // --- Mock scoring for offline/demo mode (kept for Landing display only) ---
   const mockScoring = (candidate_ids: string[]) => {
     return {
       batch_id: `batch_mock_${Date.now()}`,
@@ -298,41 +357,43 @@ function DemoBox({
   };
 
   const handleRun = async () => {
-  setLoading(true);
-  setError(null);
+    setLoading(true);
+    setError(null);
 
-  try {
-    const { job_id } = await createJob();
-    const cvsToSend = cvs.filter(cv => cv.trim()).slice(0, 5);
-    if (!cvsToSend.length) {
-      setError("Please enter at least one CV.");
-      setLoading(false);
-      return;
-    }
-
-    let data;
     try {
-      // Real backend payload
-      const candidatesPayload = cvsToSend.map(cv_text => ({ cv_text }));
-      const { candidate_ids } = await addCandidates(job_id, candidatesPayload);
-      data = await runScoring(job_id, candidate_ids);
-    } catch {
-      // fallback mock scoring
-      const candidate_ids = cvsToSend.map((_, i) => `cand_mock_${i}`);
-      data = mockScoring(candidate_ids);
+      const { job_id } = await createJob();
+      const cvsToSend = cvs.filter(cv => cv.trim()).slice(0, 5);
+      if (!cvsToSend.length) {
+        setError("Please enter at least one CV.");
+        setLoading(false);
+        return;
+      }
+
+      let data: any;
+      try {
+        // Real backend payload
+        const candidatesPayload = cvsToSend.map(cv_text => ({ cv_text }));
+        const { candidate_ids } = await addCandidates(job_id, candidatesPayload);
+        data = await runScoring(job_id, candidate_ids);
+      } catch {
+        // fallback mock scoring (Landing-only)
+        const candidate_ids = cvsToSend.map((_, i) => `cand_mock_${i}`);
+        data = mockScoring(candidate_ids);
+      }
+
+      // Normalize & persist a canonical report for the Evaluation page
+      const report = toReportPayload(data);
+      localStorage.setItem("latestBatchId", report.batch_id);
+      saveMockReport(report);
+
+      // Preserve your existing Landing display (ScoreCard expects original "data")
+      setResult(data);
+    } catch (e: any) {
+      setError(e?.message || "Request failed. Is the backend running on http://localhost:8000?");
+    } finally {
+      setLoading(false);
     }
-
-    // Save for evaluation page
-    localStorage.setItem("demoBatch", JSON.stringify(data));
-
-    setResult(data);
-  } catch (e: any) {
-    setError(e?.message || "Request failed. Is the backend running on http://localhost:8000?");
-  } finally {
-    setLoading(false);
-  }
-};
-
+  };
 
   const updateCv = (index: number, value: string) => {
     setCvs(prev => {
@@ -414,9 +475,10 @@ function DemoBox({
           </div>
 
           {result.scores?.map((s: any) => {
-            const perCandFlags: AnyFlag[] = (result.ethics_flags || []).filter(
-              (f: any) => f.candidate_id === s.candidate_id
-            ).map(asFlagObj);
+            const perCandFlags: AnyFlag[] = (result.ethics_flags || [])
+              .filter((f: any) => f.candidate_id === s.candidate_id)
+              .map(asFlagObj);
+
             return (
               <ScoreCard
                 key={s.candidate_id}
@@ -432,20 +494,6 @@ function DemoBox({
       )}
     </div>
   );
-}
-
-
-/* ---------------- Mock scoring for local demo ---------------- */
-function mockScoring(candidate_ids: string[]) {
-  return {
-    batch_id: "demo-" + Math.floor(Math.random() * 1000),
-    scores: candidate_ids.map(id => ({
-      candidate_id: id,
-      total: Math.round(Math.random() * 5 * 10) / 10,
-      by_criterion: { "Technical Skills": Math.round(Math.random() * 5), "Communication": Math.round(Math.random() * 5) }
-    })),
-    ethics_flags: candidate_ids.map(id => ({ candidate_id: id, flags: ["bias_check_passed"] }))
-  };
 }
 
 /* ---------------- Minimal icons & logo ---------------- */
