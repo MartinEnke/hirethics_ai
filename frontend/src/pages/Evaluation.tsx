@@ -1,26 +1,45 @@
 // frontend/src/pages/Evaluation.tsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { getReport } from "../lib/api";
-import { asFlagObj } from "../lib/format";
-import type { AnyFlag, FlagObj } from "../lib/format";
-import ViewerToggle from "../components/ViewerToggle";
 import type { ViewerMode } from "../lib/viewer";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000/api/v1";
+import AdvancedScoreCard from "../components/AdvancedScoreCard";
 
 export default function Evaluation() {
   const [batchId, setBatchId] = useState("");
-  const [k, setK] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [viewerMode, setViewerMode] = useState<ViewerMode>("recruiter"); // optional, for consistency
+  const [viewerMode, setViewerMode] = useState<ViewerMode>("recruiter");
+
+  // Load demo batch from localStorage if exists
+  useEffect(() => {
+    const demoData = localStorage.getItem("demoBatch");
+    if (demoData) {
+      const parsed = JSON.parse(demoData);
+      setData(parsed);
+      setBatchId(parsed.batch_id || "");
+    }
+  }, []);
 
   const run = async () => {
+    const trimmedId = batchId.trim();
+    if (!trimmedId) return;
+
+    // Check if batchId matches demo batch
+    const demoData = localStorage.getItem("demoBatch");
+    if (demoData) {
+      const parsed = JSON.parse(demoData);
+      if (parsed.batch_id === trimmedId) {
+        setData(parsed);
+        return;
+      }
+    }
+
+    // Otherwise fetch from backend
     setLoading(true);
     setErr(null);
     try {
-      const r = await getReport(batchId.trim(), k);
+      const r = await getReport(trimmedId);
       setData(r);
     } catch (e: any) {
       setErr(e?.message || "Failed to fetch report");
@@ -32,166 +51,73 @@ export default function Evaluation() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="mx-auto max-w-5xl p-6 space-y-6">
-        {/* Page header with optional viewer toggle */}
-        <div className="flex items-center justify-between gap-3">
-          <h1 className="text-2xl font-bold tracking-tight">Evaluation</h1>
-          <div className="hidden sm:block">
-            <ViewerToggle value={viewerMode} onChange={setViewerMode} />
-          </div>
-        </div>
-        <div className="sm:hidden">
+      <div className="mx-auto max-w-6xl p-6 space-y-6">
+        {/* Header */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold tracking-tight">Candidate Evaluation</h1>
           <ViewerToggle value={viewerMode} onChange={setViewerMode} />
         </div>
 
-        {/* Controls */}
+        {/* Batch input */}
         <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
           <label className="block text-sm font-medium text-slate-700">Batch ID</label>
           <input
             value={batchId}
             onChange={(e) => setBatchId(e.target.value)}
-            placeholder="e.g., batch_1234abcd"
+            placeholder="e.g., batch_1234abcd or demo batch"
             className="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:border-slate-400 focus:ring-slate-400"
           />
-          <div className="mt-3 flex flex-wrap items-end gap-3">
-            <div>
-              <label className="block text-sm font-medium text-slate-700">Top-K</label>
-              <input
-                type="number"
-                min={1}
-                value={k ?? ""}
-                onChange={(e) => setK(e.target.value ? Number(e.target.value) : undefined)}
-                placeholder="default 5"
-                className="mt-1 w-28 rounded-md border-slate-300 shadow-sm focus:border-slate-400 focus:ring-slate-400"
-              />
-            </div>
+          <div className="mt-3 flex items-center gap-3">
             <button
               onClick={run}
               disabled={!batchId || loading}
               className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
             >
-              {loading ? "Computing…" : "Compute report"}
+              {loading ? "Loading…" : "Fetch Report"}
             </button>
-
-            {/* Export buttons appear when data is loaded */}
-            {data?.batch_id && (
-              <div className="ms-auto flex items-center gap-2">
-                <a
-                  href={`${API_BASE}/audit/${data.batch_id}.json`}
-                  className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 ring-1 ring-slate-300 hover:bg-slate-50"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Export JSON
-                </a>
-                <a
-                  href={`${API_BASE}/audit/${data.batch_id}.csv`}
-                  className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 ring-1 ring-slate-300 hover:bg-slate-50"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Export CSV
-                </a>
-              </div>
-            )}
           </div>
           {err && <p className="mt-3 text-sm text-rose-600">{err}</p>}
         </div>
 
         {data && (
           <>
+            {/* Summary stats */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <Stat label="Candidates" value={data.n_candidates} />
-              <Stat label="Spearman ρ (pre vs post blinding)" value={data.spearman_rho ?? "—"} />
-              <Stat
-                label={`Top-${data.k} overlap`}
-                value={`${data.topk_overlap_count} (${(data.topk_overlap_ratio * 100).toFixed(0)}%)`}
-              />
+              <Stat label="Spearman ρ" value={data.spearman_rho ?? "—"} />
+              <Stat label="Top-K overlap" value={`${data.topk_overlap_count} (${(data.topk_overlap_ratio*100).toFixed(0)}%)`} />
               <Stat label="Mean |Δ|" value={data.mean_abs_delta} />
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
-                <div className="text-sm font-semibold text-slate-900">Flags by type</div>
-                <ul className="mt-2 text-sm text-slate-700 space-y-1">
-                  {Object.entries(data.flags_by_type || {}).map(([k, v]: any) => (
-                    <li key={k} className="flex justify-between">
-                      <span>{k}</span>
-                      <span className="font-medium">{v}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
-                <div className="text-sm font-semibold text-slate-900">Flags by severity</div>
-                <ul className="mt-2 text-sm text-slate-700 space-y-1">
-                  {Object.entries(data.flags_by_severity || {}).map(([k, v]: any) => (
-                    <li key={k} className="flex justify-between">
-                      <span className="uppercase">{k}</span>
-                      <span className="font-medium">{v}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+            {/* Candidate cards */}
+            <div className="mt-6 grid grid-cols-1 gap-4">
+              {data.scores?.map((c: any) => (
+                <AdvancedScoreCard
+                  key={c.candidate_id}
+                  candidate={c}
+                  viewerMode={viewerMode}
+                />
+              ))}
             </div>
 
-            {/* Per-candidate table */}
-            <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
-              <div className="text-sm font-semibold text-slate-900">Per-candidate</div>
-              <div className="mt-2 overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead className="text-left text-slate-600">
-                    <tr>
-                      <th className="py-2 pr-4">Candidate</th>
-                      <th className="py-2 pr-4">Total (pre)</th>
-                      <th className="py-2 pr-4">Total (post)</th>
-                      <th className="py-2 pr-4">Δ</th>
-                      <th className="py-2 pr-4">Flags</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {data.candidates?.map((c: any) => {
-                      // NOTE: report currently returns only flag *types* here; asFlagObj can still map them to styled chips
-                      const flagsObj: FlagObj[] = (c.flags as AnyFlag[]).map(asFlagObj);
-                      return (
-                        <tr key={c.candidate_id}>
-                          <td className="py-2 pr-4 font-medium text-slate-900">{c.candidate_id}</td>
-                          <td className="py-2 pr-4">{c.total_before}</td>
-                          <td className="py-2 pr-4">{c.total_after}</td>
-                          <td
-                            className={`py-2 pr-4 ${
-                              c.delta < 0
-                                ? "text-emerald-700"
-                                : c.delta > 0
-                                ? "text-rose-700"
-                                : ""
-                            }`}
-                          >
-                            {c.delta > 0 ? `+${c.delta}` : c.delta}
-                          </td>
-                          <td className="py-2 pr-4">
-                            <div className="flex flex-wrap gap-1">
-                              {flagsObj.map((f: FlagObj, i: number) => (
-                                <span
-                                  key={i}
-                                  className={`rounded-full px-2 py-0.5 text-[11px] ring-1 ${
-                                    f.severity === "warning"
-                                      ? "bg-amber-50 ring-amber-200 text-amber-900"
-                                      : "bg-slate-50 ring-slate-200 text-slate-700"
-                                  }`}
-                                  title={f.message || ""}
-                                >
-                                  {f.type}
-                                </span>
-                              ))}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+            {/* Optional download buttons */}
+            <div className="mt-6 flex gap-2">
+              <a
+                href={`http://localhost:8000/api/v1/audit/${data.batch_id}.json`}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 ring-1 ring-slate-300 hover:bg-slate-50"
+              >
+                Export JSON
+              </a>
+              <a
+                href={`http://localhost:8000/api/v1/audit/${data.batch_id}.csv`}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 ring-1 ring-slate-300 hover:bg-slate-50"
+              >
+                Export CSV
+              </a>
             </div>
           </>
         )}
@@ -205,6 +131,26 @@ function Stat({ label, value }: { label: string; value: any }) {
     <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
       <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
       <div className="mt-1 text-lg font-semibold text-slate-900">{String(value)}</div>
+    </div>
+  );
+}
+
+// --- minimal viewer toggle component ---
+function ViewerToggle({ value, onChange }: { value: ViewerMode; onChange: (v: ViewerMode) => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        className={`px-2 py-1 rounded-md text-sm font-medium ${value === "recruiter" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-700"}`}
+        onClick={() => onChange("recruiter")}
+      >
+        Recruiter
+      </button>
+      <button
+        className={`px-2 py-1 rounded-md text-sm font-medium ${value === "simple" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-700"}`}
+        onClick={() => onChange("simple")}
+      >
+        Simple
+      </button>
     </div>
   );
 }

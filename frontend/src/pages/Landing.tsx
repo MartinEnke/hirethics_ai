@@ -4,7 +4,6 @@ import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
 
 import { createJob, addCandidates, runScoring } from "../lib/api";
-
 import ScoreCard from "../components/ScoreCard";
 import ViewerToggle from "../components/ViewerToggle";
 import type { ViewerMode } from "../lib/viewer";
@@ -19,36 +18,28 @@ export default function HirethicsLanding() {
       {/* Nav */}
       <header className="sticky top-0 z-30 backdrop-blur bg-white/70 border-b border-slate-200">
         <div className="mx-auto max-w-7xl px-6 py-3.5 flex items-center justify-between gap-4">
-          {/* Left: brand */}
           <div className="flex items-center gap-3">
             <Logo />
             <span className="text-xl font-semibold tracking-tight">
               Hirethics <span className="text-emerald-600">AI</span>
             </span>
           </div>
-
-          {/* Center nav */}
           <nav className="hidden md:flex items-center gap-6 text-sm">
             <a href="#how" className="hover:text-slate-900 text-slate-600">How it works</a>
             <a href="#features" className="hover:text-slate-900 text-slate-600">Features</a>
             <a href="#demo" className="hover:text-slate-900 text-slate-600">Demo</a>
             <a href="#trust" className="hover:text-slate-900 text-slate-600">Trust</a>
           </nav>
-
-          {/* Right: viewer toggle + buttons */}
           <div className="flex items-center gap-3">
             <div className="hidden md:block">
               <ViewerToggle value={viewerMode} onChange={setViewerMode} />
             </div>
-
             <Link
               to="/evaluation"
               className="hidden sm:inline-flex px-4 py-2 rounded-xl bg-white ring-1 ring-slate-300 text-sm font-medium text-slate-900 hover:bg-slate-50"
-              title="Open Evaluation dashboard"
             >
               Open Evaluation
             </Link>
-
             <a href="#demo" className="px-4 py-2 rounded-xl border border-slate-300 text-sm hover:bg-white">
               Try Demo
             </a>
@@ -57,14 +48,11 @@ export default function HirethicsLanding() {
             </a>
           </div>
         </div>
-
-        {/* Mobile viewer toggle row */}
         <div className="md:hidden mx-auto max-w-7xl px-6 pb-3">
           <ViewerToggle value={viewerMode} onChange={setViewerMode} />
         </div>
       </header>
 
-      {/* Centering wrapper */}
       <div className="mx-auto max-w-7xl px-6">
         {/* Hero */}
         <section className="relative overflow-hidden py-20">
@@ -84,7 +72,6 @@ export default function HirethicsLanding() {
                 <a href="#how" className="px-5 py-3 rounded-2xl border border-slate-300 text-slate-700 font-medium hover:bg-white">
                   How it works
                 </a>
-                {/* Mobile-visible Evaluation button */}
                 <Link
                   to="/evaluation"
                   className="inline-flex md:hidden px-5 py-3 rounded-2xl bg-white ring-1 ring-slate-300 text-slate-900 font-medium hover:bg-slate-50"
@@ -99,11 +86,10 @@ export default function HirethicsLanding() {
               </div>
             </motion.div>
 
-            {/* Visual split mockup */}
+            {/* Visual mockup */}
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.1 }}>
               <div className="relative rounded-3xl shadow-xl ring-1 ring-black/5 overflow-hidden bg-white">
                 <div className="grid grid-cols-2 divide-x divide-slate-200">
-                  {/* Left: Black-box AI */}
                   <div className="p-6">
                     <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Typical AI</div>
                     <div className="mt-3 text-lg font-semibold">Opaque ranking</div>
@@ -116,8 +102,6 @@ export default function HirethicsLanding() {
                       No rationale. No evidence. No audit.
                     </div>
                   </div>
-
-                  {/* Right: Hirethics */}
                   <div className="p-6 bg-emerald-50/60">
                     <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Hirethics AI</div>
                     <div className="mt-3 text-lg font-semibold text-emerald-900">Explainable ranking</div>
@@ -132,20 +116,7 @@ export default function HirethicsLanding() {
                         </p>
                         <p className="mt-1 text-slate-500">Why: Strong system design (+3), prod ownership (+2)</p>
                       </li>
-                      <li className="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium">#2 — Priya S.</span>
-                          <span className="text-emerald-700 font-semibold">4.3</span>
-                        </div>
-                        <p className="mt-2 text-slate-600">
-                          <span className="font-semibold">Evidence:</span> “Led on-call rotation, improved SLOs 99.95 → 99.99…”
-                        </p>
-                        <p className="mt-1 text-slate-500">Why: Prod ownership (+2), Python depth (+1.5)</p>
-                      </li>
                     </ul>
-                    <div className="mt-4 flex items-center gap-2 text-xs text-emerald-800">
-                      <ShieldIcon className="h-4 w-4" /> Blinded check passed (ρ = 0.91)
-                    </div>
                   </div>
                 </div>
               </div>
@@ -182,10 +153,9 @@ export default function HirethicsLanding() {
             <div>
               <h3 className="text-2xl font-semibold text-slate-900">Try a quick demo</h3>
               <p className="mt-3 text-slate-600">
-                Paste a sample CV to see a mock score with evidence and an example ethics flag.
-                The full app supports batch scoring, evaluation metrics, and PDF exports.
+                Paste up to 5 sample CVs to see a mock score with evidence and ethics flags.
               </p>
-              <div className="mt-6 flex gap-3">
+              <div className="mt-6 flex gap-3 flex-wrap">
                 <a href="#demo-box" className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-medium hover:bg-slate-800">
                   Open Interactive Demo
                 </a>
@@ -247,8 +217,7 @@ export default function HirethicsLanding() {
   );
 }
 
-/* ---------- Small components ---------- */
-
+/* ---------------- Small components ---------------- */
 function Badge({ icon, label }: { icon: React.ReactNode; label: string }) {
   return (
     <span className="inline-flex items-center gap-2 rounded-full bg-white/70 ring-1 ring-slate-200 px-3 py-1 text-xs">
@@ -267,9 +236,7 @@ function Card({ icon, title, desc }: { icon: React.ReactNode; title: string; des
       transition={{ duration: 0.4 }}
       className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200"
     >
-      <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700">
-        {icon}
-      </div>
+      <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700">{icon}</div>
       <h4 className="mt-4 text-lg font-semibold text-slate-900">{title}</h4>
       <p className="mt-2 text-slate-600 text-sm">{desc}</p>
     </motion.div>
@@ -279,9 +246,7 @@ function Card({ icon, title, desc }: { icon: React.ReactNode; title: string; des
 function Feature({ icon, title, desc }: { icon: React.ReactNode; title: string; desc: string }) {
   return (
     <div className="rounded-2xl bg-gray-50 p-6 ring-1 ring-slate-200">
-      <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700">
-        {icon}
-      </div>
+      <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700">{icon}</div>
       <h4 className="mt-4 text-lg font-semibold text-slate-900">{title}</h4>
       <p className="mt-2 text-slate-600 text-sm">{desc}</p>
     </div>
@@ -290,9 +255,7 @@ function Feature({ icon, title, desc }: { icon: React.ReactNode; title: string; 
 
 function Pill({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700 ring-1 ring-slate-200">
-      {children}
-    </span>
+    <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700 ring-1 ring-slate-200">{children}</span>
   );
 }
 
@@ -300,7 +263,8 @@ function Dot() {
   return <span className="h-2.5 w-2.5 rounded-full bg-slate-300 inline-block" />;
 }
 
-/* --- Demo Box wired to backend, uses ScoreCard + viewerMode --- */
+/* ---------------- DemoBox ---------------- */
+/* --- DemoBox with multi-CV support and fallback mock scoring --- */
 function DemoBox({
   viewerMode,
   setViewerMode,
@@ -308,40 +272,120 @@ function DemoBox({
   viewerMode: ViewerMode;
   setViewerMode: (v: ViewerMode) => void;
 }) {
-  const [cv, setCv] = useState("");
+  const [cvs, setCvs] = useState<string[]>([""]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
 
-  async function handleRun() {
-    setLoading(true);
-    setError(null);
-    try {
-      const { job_id } = await createJob();
-      const { candidate_ids } = await addCandidates(
-        job_id,
-        cv || "Designed and operated microservices handling 3M req/day; led on-call; improved SLOs to 99.99"
-      );
-      const data = await runScoring(job_id, candidate_ids);
-      setResult(data);
-    } catch (e: any) {
-      setError(e?.message || "Request failed. Is the backend running on http://localhost:8000?");
-    } finally {
+  // --- Mock scoring for offline/demo mode ---
+  const mockScoring = (candidate_ids: string[]) => {
+    return {
+      batch_id: `batch_mock_${Date.now()}`,
+      scores: candidate_ids.map((id, i) => ({
+        candidate_id: id,
+        total: Math.floor(60 + Math.random() * 40), // random 60-100
+        by_criterion: [
+          { criterion: "System Design", score: Math.floor(20 + Math.random() * 10) },
+          { criterion: "Experience", score: Math.floor(20 + Math.random() * 10) },
+          { criterion: "Skills", score: Math.floor(20 + Math.random() * 10) },
+        ],
+      })),
+      ethics_flags: candidate_ids.map(id => ({
+        candidate_id: id,
+        flags: ["Minor bias detected"]
+      })),
+    };
+  };
+
+  const handleRun = async () => {
+  setLoading(true);
+  setError(null);
+
+  try {
+    const { job_id } = await createJob();
+    const cvsToSend = cvs.filter(cv => cv.trim()).slice(0, 5);
+    if (!cvsToSend.length) {
+      setError("Please enter at least one CV.");
       setLoading(false);
+      return;
     }
+
+    let data;
+    try {
+      // Real backend payload
+      const candidatesPayload = cvsToSend.map(cv_text => ({ cv_text }));
+      const { candidate_ids } = await addCandidates(job_id, candidatesPayload);
+      data = await runScoring(job_id, candidate_ids);
+    } catch {
+      // fallback mock scoring
+      const candidate_ids = cvsToSend.map((_, i) => `cand_mock_${i}`);
+      data = mockScoring(candidate_ids);
+    }
+
+    // Save for evaluation page
+    localStorage.setItem("demoBatch", JSON.stringify(data));
+
+    setResult(data);
+  } catch (e: any) {
+    setError(e?.message || "Request failed. Is the backend running on http://localhost:8000?");
+  } finally {
+    setLoading(false);
   }
+};
+
+
+  const updateCv = (index: number, value: string) => {
+    setCvs(prev => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
+  };
+
+  const addCvField = () => {
+    if (cvs.length < 5) setCvs(prev => [...prev, ""]);
+  };
+
+  const removeCvField = (index: number) => {
+    setCvs(prev => prev.filter((_, i) => i !== index));
+  };
 
   return (
     <div id="demo-box" className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-      <label className="text-sm font-medium text-slate-700">Sample CV text</label>
-      <textarea
-        className="mt-2 w-full h-36 rounded-xl border border-slate-300 p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-        placeholder="e.g., Designed and operated microservices handling 3M req/day..."
-        value={cv}
-        onChange={(e) => setCv(e.target.value)}
-      />
+      {/* CV Inputs */}
+      <div className="flex flex-col gap-4">
+        {cvs.map((cv, i) => (
+          <div key={i} className="relative">
+            <textarea
+              className="mt-2 w-full h-24 rounded-xl border border-slate-300 p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              placeholder={`CV ${i + 1} text...`}
+              value={cv}
+              onChange={e => updateCv(i, e.target.value)}
+            />
+            {cvs.length > 1 && (
+              <button
+                onClick={() => removeCvField(i)}
+                className="absolute top-1 right-1 text-rose-600 text-sm font-bold hover:text-rose-800"
+                title="Remove this CV"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        ))}
+        {cvs.length < 5 && (
+          <button
+            onClick={addCvField}
+            className="px-3 py-1 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 text-sm"
+          >
+            + Add another CV
+          </button>
+        )}
+      </div>
+
+      {/* Actions */}
       <div className="mt-4 flex items-center justify-between">
-        <span className="text-xs text-slate-500">Will create a Job → add Candidate → run Scoring</span>
+        <span className="text-xs text-slate-500">Will create Job → add Candidate(s) → run Scoring</span>
         <button
           onClick={handleRun}
           disabled={loading}
@@ -351,56 +395,35 @@ function DemoBox({
         </button>
       </div>
 
+      {/* Error message */}
       {error && (
         <div className="mt-4 rounded-lg bg-rose-50 text-rose-800 text-sm p-3 ring-1 ring-rose-200">
           {error}
         </div>
       )}
 
+      {/* Result display */}
       {result && (
         <div className="mt-6 grid gap-4">
-          {/* Batch header row with toggle centered and button on the right */}
-          <div className="rounded-xl bg-emerald-50 p-4 ring-1 ring-emerald-200">
-            <div className="flex flex-wrap items-center gap-3">
-              {/* Left: batch id */}
-              <div className="min-w-[12rem]">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
-                  Batch
-                </div>
-                <div className="mt-1 text-sm text-emerald-900">{result.batch_id}</div>
-              </div>
-
-              {/* Middle: viewer toggle */}
-              <div className="flex items-center">
-                <ViewerToggle value={viewerMode} onChange={setViewerMode} />
-              </div>
-
-              {/* Right: evaluation button (push far right) */}
-              <div className="ml-auto">
-                <Link
-                  to="/evaluation"
-                  className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-                  title="Open Evaluation dashboard"
-                >
-                  Open Evaluation
-                </Link>
-              </div>
+          <div className="rounded-xl bg-emerald-50 p-4 ring-1 ring-emerald-200 flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Batch</div>
+              <div className="mt-1 text-sm text-emerald-900">{result.batch_id}</div>
             </div>
+            <ViewerToggle value={viewerMode} onChange={setViewerMode} />
           </div>
 
-          {/* ScoreCards (respect viewer mode) */}
           {result.scores?.map((s: any) => {
             const perCandFlags: AnyFlag[] = (result.ethics_flags || []).filter(
               (f: any) => f.candidate_id === s.candidate_id
-            );
-            const flagsObj = perCandFlags.map(asFlagObj);
+            ).map(asFlagObj);
             return (
               <ScoreCard
                 key={s.candidate_id}
                 candidateId={s.candidate_id}
                 total={s.total}
                 by={s.by_criterion}
-                flags={flagsObj}
+                flags={perCandFlags}
                 viewerMode={viewerMode}
               />
             );
@@ -411,68 +434,25 @@ function DemoBox({
   );
 }
 
-/* --- Minimal inline icons & logo --- */
-function ShieldIcon({ className = "h-5 w-5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7l7-4z" />
-      <path d="M9 12l2 2 4-4" strokeLinecap="round" />
-    </svg>
-  );
+
+/* ---------------- Mock scoring for local demo ---------------- */
+function mockScoring(candidate_ids: string[]) {
+  return {
+    batch_id: "demo-" + Math.floor(Math.random() * 1000),
+    scores: candidate_ids.map(id => ({
+      candidate_id: id,
+      total: Math.round(Math.random() * 5 * 10) / 10,
+      by_criterion: { "Technical Skills": Math.round(Math.random() * 5), "Communication": Math.round(Math.random() * 5) }
+    })),
+    ethics_flags: candidate_ids.map(id => ({ candidate_id: id, flags: ["bias_check_passed"] }))
+  };
 }
-function EyeIcon({ className = "h-5 w-5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" />
-      <circle cx="12" cy="12" r="3.5" />
-    </svg>
-  );
-}
-function TrailIcon({ className = "h-5 w-5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M4 19h6M4 15h10M4 11h14M4 7h8" strokeLinecap="round" />
-      <circle cx="19" cy="7" r="2" />
-    </svg>
-  );
-}
-function ScaleIcon() {
-  return (
-    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M12 3v18M6 7l-4 6h8l-4-6zm12 0l-4 6h8l-4-6zM6 19h12" strokeLinecap="round" />
-    </svg>
-  );
-}
-function LensIcon() {
-  return (
-    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <circle cx="11" cy="11" r="6" />
-      <path d="M20 20l-4.5-4.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-function HumanIcon() {
-  return (
-    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <circle cx="12" cy="7" r="3" />
-      <path d="M5 21c0-4 3-7 7-7s7 3 7 7" />
-    </svg>
-  );
-}
-function Logo({ small = false }: { small?: boolean }) {
-  return (
-    <div className={`relative ${small ? "h-6 w-6" : "h-8 w-8"}`}>
-      <svg viewBox="0 0 48 48" className="h-full w-full">
-        <defs>
-          <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
-            <stop offset="0%" stopColor="#10B981" />
-            <stop offset="100%" stopColor="#1E3A8A" />
-          </linearGradient>
-        </defs>
-        <rect x="6" y="6" width="36" height="36" rx="10" fill="url(#g)" opacity="0.15" />
-        <path d="M12 30c4-8 8-12 12-12s8 4 12 12" fill="none" stroke="url(#g)" strokeWidth="3" strokeLinecap="round" />
-        <circle cx="24" cy="18" r="3" fill="#10B981" />
-      </svg>
-    </div>
-  );
-}
+
+/* ---------------- Minimal icons & logo ---------------- */
+function ShieldIcon({ className = "h-5 w-5" }: { className?: string }) { return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7l7-4z" /><path d="M9 12l2 2 4-4" strokeLinecap="round" /></svg>; }
+function EyeIcon({ className = "h-5 w-5" }: { className?: string }) { return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" /><circle cx="12" cy="12" r="3.5" /></svg>; }
+function TrailIcon({ className = "h-5 w-5" }: { className?: string }) { return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 19h6M4 15h10M4 11h14M4 7h8" strokeLinecap="round" /><circle cx="19" cy="7" r="2" /></svg>; }
+function ScaleIcon() { return <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3v18M6 7l-4 6h8l-4-6zm12 0l-4 6h8l-4-6zM6 19h12" strokeLinecap="round"/></svg>; }
+function LensIcon() { return <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5" strokeLinecap="round"/></svg>; }
+function HumanIcon() { return <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="7" r="3"/><path d="M5 21c0-4 3-7 7-7s7 3 7 7"/></svg>; }
+function Logo({ small = false }: { small?: boolean }) { return (<div className={`relative ${small ? "h-6 w-6" : "h-8 w-8"}`}><svg viewBox="0 0 48 48" className="h-full w-full"><defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stopColor="#10B981"/><stop offset="100%" stopColor="#1E3A8A"/></linearGradient></defs><rect x="6" y="6" width="36" height="36" rx="10" fill="url(#g)" opacity="0.15"/><path d="M12 30c4-8 8-12 12-12s8 4 12 12" fill="none" stroke="url(#g)" strokeWidth="3" strokeLinecap="round"/><circle cx="24" cy="18" r="3" fill="#10B981"/></svg></div>); }
