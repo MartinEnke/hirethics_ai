@@ -279,67 +279,94 @@ function DemoBox({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
 
-  // --- Mock flag catalog & helpers ---
+  // ---- Helpers for mock scoring ----
+  function extractName(cv: string) {
+    const line = (cv.split("\n").map((s) => s.trim()).find(Boolean) || "").replace(/^[-–•*#\s]+/, "");
+    return line.length > 2 && line.length < 80 ? line : null;
+  }
+  function fitBonus(cvText: string, roleContext: string) {
+    const text = `${cvText}\n${roleContext}`.toLowerCase();
+    let pts = 0;
+    if (/(python)/.test(text)) pts += 4;
+    if (/(fastapi|flask)/.test(text)) pts += 4;
+    if (/(postgres|sql)/.test(text)) pts += 3;
+    if (/(rag|llm|pgvector|langchain|llamaindex)/.test(text)) pts += 4;
+    if (/(react)/.test(text)) pts += 2;
+    if (/(typescript)/.test(text)) pts += 1;
+    if (/(pytest|testing)/.test(text)) pts += 1;
+    if (/(github actions|ci)/.test(text)) pts += 1;
+    return Math.min(pts, 20);
+  }
   type MockFlag = { label: string; severity: "minor" | "moderate" | "major" };
-  const MOCK_FLAG_CATALOG: MockFlag[] = [
+  const FLAG_CATALOG: MockFlag[] = [
     { label: "Minor bias detected", severity: "minor" },
     { label: "Proxy signal suspected: brand", severity: "moderate" },
     { label: "Instability under blinding", severity: "moderate" },
     { label: "Large rank shift under counterfactual", severity: "major" },
   ];
   function sampleFlags(): MockFlag[] {
-    // ~50% none, 35% one, 15% two
     const r = Math.random();
     const n = r < 0.5 ? 0 : r < 0.85 ? 1 : 2;
-    const shuffled = [...MOCK_FLAG_CATALOG].sort(() => Math.random() - 0.5);
-    return shuffled.slice(0, n);
+    return [...FLAG_CATALOG].sort(() => Math.random() - 0.5).slice(0, n);
+  }
+  function clamp(n: number, lo: number, hi: number) {
+    return Math.max(lo, Math.min(hi, n));
   }
 
-  // --- Mock scoring for offline/demo mode (now with summaries & stability metrics) ---
-  function mockScoring(candidate_ids: string[]) {
-    const scores = candidate_ids.map((id) => ({
-      candidate_id: id,
-      total: Math.floor(60 + Math.random() * 40), // 60–100
-      by_criterion: [
-        { criterion: "System Design", score: Math.floor(20 + Math.random() * 10) },
-        { criterion: "Experience", score: Math.floor(20 + Math.random() * 10) },
-        { criterion: "Skills", score: Math.floor(20 + Math.random() * 10) },
-      ],
-    }));
+  // Role-aware, name-aware mock scoring
+  function mockScoring(
+    cands: { id: string; cv_text: string; display_name: string }[],
+    roleCtx: string
+  ) {
+    const raw = cands.map(({ id, cv_text, display_name }) => {
+      const base = Math.floor(60 + Math.random() * 40);
+      const bonus = fitBonus(cv_text, roleCtx);
+      let total = Math.min(base + bonus, 100);
 
-    // per-candidate flags + severity
-    const perCandFlags = candidate_ids.map((cid) => {
       const picks = sampleFlags();
-      return { candidate_id: cid, flags: picks.map((p) => p.label), _sev: picks.map((p) => p.severity) };
+      const hasMajor = picks.some((p) => p.severity === "major");
+      if (hasMajor) total = Math.max(total - 4, 0);
+
+      return {
+        candidate_id: id,
+        display_name,
+        total,
+        by_criterion: [
+          { criterion: "System Design", score: Math.floor(20 + Math.random() * 10) },
+          { criterion: "Experience", score: Math.floor(20 + Math.random() * 10) },
+          { criterion: "Skills", score: Math.floor(20 + Math.random() * 10) },
+        ],
+        flags: picks,
+      };
     });
 
-    // summaries
     const flags_by_type: Record<string, number> = {};
     const flags_by_severity: Record<string, number> = { minor: 0, moderate: 0, major: 0 };
-    perCandFlags.forEach((f) => {
-      (f.flags || []).forEach((label) => {
-        flags_by_type[label] = (flags_by_type[label] || 0) + 1;
-      });
-      (f._sev || []).forEach((sev) => {
-        flags_by_severity[sev] = (flags_by_severity[sev] || 0) + 1;
+    raw.forEach((r) => {
+      r.flags.forEach((f) => {
+        flags_by_type[f.label] = (flags_by_type[f.label] || 0) + 1;
+        flags_by_severity[f.severity] = (flags_by_severity[f.severity] || 0) + 1;
       });
     });
 
     const batch_id = `batch_mock_${Date.now()}`;
-    const n_candidates = candidate_ids.length;
-
-    // simple demo stability numbers
-    const spearman_rho = +(0.78 + Math.random() * 0.18).toFixed(2);
+    const n_candidates = cands.length;
+    const spearman_rho = +(0.82 + Math.random() * 0.12).toFixed(2);
     const topKDefault = 5;
     const overlap = Math.min(3, n_candidates);
     const topk_overlap_count = overlap;
     const topk_overlap_ratio = +(overlap / Math.min(topKDefault, n_candidates || 1)).toFixed(2);
-    const mean_abs_delta = +(Math.random() * 2 + 0.6).toFixed(2);
+    const mean_abs_delta = +(Math.random() * 1.5 + 0.4).toFixed(2);
 
     return {
       batch_id,
-      scores,
-      ethics_flags: perCandFlags.map(({ candidate_id, flags }) => ({ candidate_id, flags })),
+      scores: raw.map((r) => ({
+        candidate_id: r.candidate_id,
+        display_name: r.display_name,
+        total: r.total,
+        by_criterion: r.by_criterion,
+      })),
+      ethics_flags: raw.map((r) => ({ candidate_id: r.candidate_id, flags: r.flags.map((f) => f.label) })),
       flags_by_type,
       flags_by_severity,
       n_candidates,
@@ -350,27 +377,22 @@ function DemoBox({
     };
   }
 
-  // Convert the above mock format into a canonical ReportPayload for Evaluation offline cache
+  // Convert to canonical report for Evaluation fallback (includes display_name)
   function toCanonicalReport(mock: any) {
-    // fabricate fairness/transparency from distribution around total
     const candidates = (mock.scores || []).map((s: any) => {
-      const fairness = clamp(Math.round((s.total - 5) + Math.random() * 10), 50, 95);
-      const transparency = clamp(Math.round((s.total - 8) + Math.random() * 12), 50, 95);
+      const fairness = clamp(Math.round(s.total - 5 + Math.random() * 10), 50, 95);
+      const transparency = clamp(Math.round(s.total - 8 + Math.random() * 12), 50, 95);
       const candidate_id = s.candidate_id;
-      // find flags
       const found = (mock.ethics_flags || []).find((f: any) => f.candidate_id === candidate_id);
       return {
         candidate_id,
-        score: {
-          overall: s.total,
-          fairness,
-          transparency,
-        },
+        display_name: s.display_name || undefined,
+        score: { overall: s.total, fairness, transparency },
         flags: found?.flags || [],
       };
     });
 
-    const canonical = {
+    return {
       batch_id: mock.batch_id,
       n_candidates: mock.n_candidates ?? candidates.length,
       spearman_rho: mock.spearman_rho,
@@ -378,15 +400,9 @@ function DemoBox({
       topk_overlap_ratio: mock.topk_overlap_ratio,
       mean_abs_delta: mock.mean_abs_delta,
       candidates,
-      // keep summaries for Evaluation
       flags_by_type: mock.flags_by_type,
       flags_by_severity: mock.flags_by_severity,
     };
-    return canonical;
-  }
-
-  function clamp(n: number, lo: number, hi: number) {
-    return Math.max(lo, Math.min(hi, n));
   }
 
   const handleRun = async () => {
@@ -409,21 +425,25 @@ function DemoBox({
         const { candidate_ids } = await addCandidates(job_id, candidatesPayload);
         data = await runScoring(job_id, candidate_ids);
       } catch {
-        // fallback mock scoring
-        const candidate_ids = cvsToSend.map((_, i) => `cand_mock_${i}`);
-        data = mockScoring(candidate_ids);
+        // fallback mock scoring with role context + names
+        const roleCtx = localStorage.getItem("jobContext") || "";
+        const candObjs = cvsToSend.map((cv, i) => ({
+          id: `cand_mock_${i}`,
+          cv_text: cv,
+          display_name: extractName(cv) || `Candidate ${i + 1}`,
+        }));
+        data = mockScoring(candObjs, roleCtx);
       }
 
-      // Persist for Evaluation page (both legacy + canonical per-batch)
+      // Persist for Evaluation page
       localStorage.setItem("demoBatch", JSON.stringify(data));
       localStorage.setItem("latestBatchId", data.batch_id);
 
-      // Save canonical report for offline Evaluation (report:<batch_id>)
+      // Save canonical report for offline Evaluation
       try {
         const canonical = toCanonicalReport(data);
         localStorage.setItem(`report:${data.batch_id}`, JSON.stringify(canonical));
       } catch (e) {
-        // non-fatal
         console.warn("Failed to persist canonical report", e);
       }
 
@@ -521,7 +541,7 @@ function DemoBox({
             return (
               <ScoreCard
                 key={s.candidate_id}
-                candidateId={s.candidate_id}
+                candidateId={s.display_name || s.candidate_id}
                 total={s.total}
                 by={s.by_criterion}
                 flags={perCandFlags}
