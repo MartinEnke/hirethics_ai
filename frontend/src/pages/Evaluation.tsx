@@ -360,18 +360,25 @@ export default function Evaluation() {
             </div>
 
             {/* Flags overview with helper lines */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <div>
-                <div className="mb-1 text-xs text-slate-500">
-                  Grouped by category (e.g., proxy signals, instability, brand influence).
-                </div>
-                <FlagSummary title="Flags by type" flags={data.flags_by_type} />
-              </div>
-              <div>
-                <div className="mb-1 text-xs text-slate-500">Grouped by severity (if provided by backend).</div>
-                <FlagSummary title="Flags by severity" flags={data.flags_by_severity} />
-              </div>
-            </div>
+<div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+  <div>
+    <div className="mb-1 text-xs text-slate-500">
+      Grouped by category (e.g., proxy signals, instability, brand influence).
+    </div>
+    <FlagSummary title="Flags by type" flags={data?.flags_by_type} />
+  </div>
+
+  <div>
+    <div className="mb-1 text-xs text-slate-500">Grouped by severity (if provided by backend).</div>
+    {data?.flags_by_severity && Object.keys(data.flags_by_severity).length > 0 ? (
+      <FlagSummary title="Flags by severity" flags={data.flags_by_severity} />
+    ) : (
+      <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200 text-sm text-slate-500">
+        No severity data provided.
+      </div>
+    )}
+  </div>
+</div>
 
             {/* Candidates */}
             <div className="grid grid-cols-1 gap-4 mt-4">
