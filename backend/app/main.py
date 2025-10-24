@@ -12,6 +12,17 @@ from typing import Any, Dict, List, Tuple
 from app.llm import llm_available, score_with_llm
 from app.routers import candidates, audit
 
+from app.routers import uploads 
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 # ----- Load environment -----
 ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=False)
@@ -29,6 +40,7 @@ app.add_middleware(
 
 app.include_router(candidates.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
+app.include_router(uploads.router, prefix="/api/v1")
 
 # ----- In-memory stores -----
 _JOBS: Dict[str, Dict] = {}
@@ -216,3 +228,7 @@ def export_audit_csv(batch_id: str):
     writer.writeheader()
     buf.seek(0)
     return StreamingResponse(buf, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={batch_id}.csv"})
+
+
+# uvicorn app.main:app --reload --port 8000
+# python backend/test_full_flow.py

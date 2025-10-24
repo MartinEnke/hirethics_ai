@@ -3,12 +3,9 @@ import React, { useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
 
-import { createJob, addCandidates, runScoring } from "../lib/api";
-import ScoreCard from "../components/ScoreCard";
+import { createJob, addCandidates, runScoring, extractFromPdfs } from "../lib/api";
 import ViewerToggle from "../components/ViewerToggle";
 import type { ViewerMode } from "../lib/viewer";
-import { asFlagObj } from "../lib/format";
-import type { AnyFlag } from "../lib/format";
 
 /** -----------------------
  *  Landing Page
@@ -156,7 +153,7 @@ export default function HirethicsLanding() {
             <div>
               <h3 className="text-2xl font-semibold text-slate-900">Try a quick demo</h3>
               <p className="mt-3 text-slate-600">
-                Paste up to 5 sample CVs to see a mock score with evidence and ethics flags.
+                Upload up to 5 **PDF** CVs or paste text to see a mock score with evidence and ethics flags.
               </p>
               <div className="mt-6 flex gap-3 flex-wrap">
                 <a href="#demo-box" className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-medium hover:bg-slate-800">
@@ -266,8 +263,7 @@ function Dot() {
   return <span className="h-2.5 w-2.5 rounded-full bg-slate-300 inline-block" />;
 }
 
-/* ---------------- DemoBox ---------------- */
-/* ---------------- DemoBox (seeded mock + name-aware) ---------------- */
+/* ---------------- DemoBox (PDF upload + text, seeded mock) ---------------- */
 function DemoBox({
   viewerMode,
   setViewerMode,
@@ -276,11 +272,41 @@ function DemoBox({
   setViewerMode: (v: ViewerMode) => void;
 }) {
   const [cvs, setCvs] = useState<string[]>([""]);
+  const [uploads, setUploads] = useState<Array<{ id: string; filename: string; text: string; size: number }>>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
 
-  /* ---- tiny seeded RNG utils (deterministic per inputs) ---- */
+  /* ---------- inline MiniViewerToggle ---------- */
+  function MiniViewerToggle({
+    value,
+    onChange,
+  }: {
+    value: ViewerMode;
+    onChange: (v: ViewerMode) => void;
+  }) {
+    const tabs: ViewerMode[] = ["recruiter", "ethics", "dev"];
+    return (
+      <div className="inline-flex items-center rounded-xl ring-1 ring-slate-300 bg-white overflow-hidden">
+        {tabs.map((t) => {
+          const active = value === t;
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => onChange(t)}
+              className={`px-3 py-1.5 text-sm ${active ? "bg-slate-900 text-white" : "text-slate-700"}`}
+              title={t}
+            >
+              {t[0].toUpperCase() + t.slice(1)}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  /* ---------------------- seeded RNG helpers ---------------------- */
   function xmur3(str: string) {
     let h = 1779033703 ^ str.length;
     for (let i = 0; i < str.length; i++) {
@@ -305,13 +331,12 @@ function DemoBox({
     Math.floor(rng() * (hi - lo + 1)) + lo;
   const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
-  /* ---- name + signals helpers ---- */
+  /* ------------------ name + signals helpers ------------------ */
   function extractName(cv: string) {
     const cand = (cv.split("\n").map((s) => s.trim()).find(Boolean) || "").replace(/^[-–•*#\s]+/, "");
     return cand && cand.length <= 80 ? cand : null;
   }
 
-  // very simple keyword detector used for fit bonus
   function detectSignals(text: string) {
     const t = text.toLowerCase();
     return {
@@ -329,14 +354,12 @@ function DemoBox({
     };
   }
 
-  // role-weighted bonus (core weighted double, extras single), capped
   function fitBonus(cvText: string, roleContext: string) {
-    const t = `${cvText}\n${roleContext}`;
-    const s = detectSignals(t);
+    const s = detectSignals(`${cvText}\n${roleContext}`);
     const coreHits = s.python + (s.fastapi || s.flask ? 1 : 0) + s.sql + s.rag + s.react + s.ts;
     const extras = s.testing + s.ci + s.docs + s.design;
     const raw = coreHits * 2 + extras * 1;
-    return Math.min(Math.round(raw), 12);
+    return Math.min(Math.round(raw), 10);
   }
 
   type MockFlag = { label: string; severity: "minor" | "moderate" | "major" };
@@ -349,8 +372,7 @@ function DemoBox({
 
   function sampleFlags(rng: () => number): MockFlag[] {
     const r = rng();
-    const n = r < 0.55 ? 0 : r < 0.88 ? 1 : 2; // mostly none/one
-    // shuffle deterministically-ish using rng
+    const n = r < 0.6 ? 0 : r < 0.9 ? 1 : 2;
     const arr = [...FLAG_CATALOG];
     for (let i = arr.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
@@ -359,7 +381,7 @@ function DemoBox({
     return arr.slice(0, n);
   }
 
-  /* ---- seeded, role-aware mock scoring ---- */
+  /* ---------------- seeded, role-aware mock scoring ---------------- */
   function mockScoring(
     cands: { id: string; cv_text: string; display_name: string }[],
     roleCtx: string,
@@ -368,13 +390,12 @@ function DemoBox({
     const seedFn = xmur3(seedInput);
     const rng = mulberry32(seedFn());
 
-    const raw = cands.map(({ id, cv_text, display_name }, idx) => {
-      const base = randInt(rng, 60, 85); // keep base reasonable
-      const bonus = fitBonus(cv_text, roleCtx); // 0..12
-      let total = clamp(base + bonus, 40, 99); // cap at 99 (no “perfect 100”)
-
-      const picks = sampleFlags(rng);
-      if (picks.some((p) => p.severity === "major")) total = Math.max(total - 4, 0);
+    const raw = cands.map(({ id, cv_text, display_name }) => {
+      const base = randInt(rng, 60, 84);
+      const bonus = fitBonus(cv_text, roleCtx);
+      let total = clamp(base + bonus, 45, 98);
+      const flags = sampleFlags(rng);
+      if (flags.some((f) => f.severity === "major")) total = Math.max(total - 4, 0);
 
       return {
         candidate_id: id,
@@ -385,11 +406,10 @@ function DemoBox({
           { criterion: "Experience", score: randInt(rng, 20, 30) },
           { criterion: "Skills", score: randInt(rng, 20, 30) },
         ],
-        flags: picks,
+        flags,
       };
     });
 
-    // summaries
     const flags_by_type: Record<string, number> = {};
     const flags_by_severity: Record<string, number> = { minor: 0, moderate: 0, major: 0 };
     raw.forEach((r) =>
@@ -399,7 +419,6 @@ function DemoBox({
       })
     );
 
-    // stability-esque numbers (seeded)
     const n_candidates = cands.length;
     const spearman_rho = +(0.82 + rng() * 0.12).toFixed(2);
     const k = 5;
@@ -427,17 +446,15 @@ function DemoBox({
       topk_overlap_count,
       topk_overlap_ratio,
       mean_abs_delta,
-      // store seed so Evaluation could reproduce if needed
       _seed: seedInput,
     };
   }
 
   function toCanonicalReport(mock: any) {
-    // derive fairness/transparency from total (seeded feel not needed here)
-    const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+    const clampScore = (n: number) => Math.max(55, Math.min(95, n));
     const candidates = (mock.scores || []).map((s: any) => {
-      const fairness = clamp(Math.round(s.total - 5 + Math.random() * 8), 55, 95);
-      const transparency = clamp(Math.round(s.total - 8 + Math.random() * 10), 55, 95);
+      const fairness = clampScore(Math.round(s.total - 6 + Math.random() * 8));
+      const transparency = clampScore(Math.round(s.total - 8 + Math.random() * 10));
       const candidate_id = s.candidate_id;
       const found = (mock.ethics_flags || []).find((f: any) => f.candidate_id === candidate_id);
       return {
@@ -462,33 +479,63 @@ function DemoBox({
     };
   }
 
-  const handleRun = async () => {
+  /* -------------------------- handlers -------------------------- */
+  async function onPickPdfs(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []).filter((f) => f.type === "application/pdf");
+    if (!files.length) return;
     setLoading(true);
     setError(null);
+    try {
+      const extracted = await extractFromPdfs(files);
+      setUploads((prev) => [...prev, ...extracted]);
+      setCvs((prev) => {
+        const texts = extracted.map((x) => x.text?.trim() || "");
+        return [...prev.filter((t) => t.trim() !== ""), ...texts].slice(0, 5);
+      });
+    } catch (e: any) {
+      setError(e?.message || "PDF extraction failed.");
+    } finally {
+      setLoading(false);
+      e.currentTarget.value = "";
+    }
+  }
+
+  async function handleRun() {
+    setLoading(true);
+    setError(null);
+    setResult(null);
 
     try {
       const { job_id } = await createJob();
-      const cvsToSend = cvs.filter((cv) => cv.trim()).slice(0, 5);
-      if (!cvsToSend.length) {
-        setError("Please enter at least one CV.");
-        setLoading(false);
-        return;
-      }
+
+      const textsFromPdfs = uploads.map((u) => u.text).filter(Boolean);
+      const pasted = cvs.filter((cv) => cv.trim());
+      const combined = [...textsFromPdfs, ...pasted].slice(0, 5);
+      if (!combined.length) throw new Error("Please upload PDF(s) or paste at least one CV.");
+
+      const candidatesPayload = combined.map((cv_text, i) => {
+        const labelFromPdf = uploads[i]?.filename?.replace(/\.[Pp][Dd][Ff]$/, "");
+        return {
+          cv_text,
+          display_name: extractName(cv_text) || labelFromPdf || `Candidate ${i + 1}`,
+          artifacts: {},
+        };
+      });
 
       let data: any;
       try {
-        const candidatesPayload = cvsToSend.map((cv_text) => ({ cv_text }));
         const { candidate_ids } = await addCandidates(job_id, candidatesPayload);
         data = await runScoring(job_id, candidate_ids);
       } catch {
+        // mock fallback
         const roleCtx = localStorage.getItem("jobContext") || "";
-        const candObjs = cvsToSend.map((cv, i) => ({
+        const cands = candidatesPayload.map((c, i) => ({
           id: `cand_mock_${i}`,
-          cv_text: cv,
-          display_name: extractName(cv) || `Candidate ${i + 1}`,
+          cv_text: c.cv_text,
+          display_name: c.display_name || `Candidate ${i + 1}`,
         }));
-        const seedInput = `${roleCtx}||${cvsToSend.join("||")}`; // reproducible per same inputs
-        data = mockScoring(candObjs, roleCtx, seedInput);
+        const seedInput = `${roleCtx}||${combined.join("||")}`;
+        data = mockScoring(cands, roleCtx, seedInput);
       }
 
       localStorage.setItem("demoBatch", JSON.stringify(data));
@@ -508,33 +555,57 @@ function DemoBox({
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const updateCv = (index: number, value: string) => {
+  function updateCv(index: number, value: string) {
     setCvs((prev) => {
       const next = [...prev];
       next[index] = value;
       return next;
     });
-  };
-
-  const addCvField = () => {
+  }
+  function addCvField() {
     if (cvs.length < 5) setCvs((prev) => [...prev, ""]);
-  };
-
-  const removeCvField = (index: number) => {
+  }
+  function removeCvField(index: number) {
     setCvs((prev) => prev.filter((_, i) => i !== index));
-  };
+  }
 
+  /* ------------------------------ UI ------------------------------ */
   return (
     <div id="demo-box" className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+      {/* Uploads */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm text-slate-700">
+          <div className="font-semibold">Upload CV PDFs</div>
+          <div className="text-xs text-slate-500">You can also paste CV text below. Max 5 total.</div>
+        </div>
+        <label className="cursor-pointer">
+          <span className="text-xs rounded-lg px-3 py-1 ring-1 ring-slate-300 hover:bg-slate-50 inline-block">Choose PDFs</span>
+          <input type="file" accept="application/pdf" multiple className="hidden" onChange={onPickPdfs} />
+        </label>
+      </div>
+
+      {uploads.length > 0 && (
+        <div className="mt-3 rounded-lg bg-slate-50 p-3 ring-1 ring-slate-200">
+          <div className="text-xs font-medium text-slate-700">Selected files:</div>
+          <ul className="mt-1 text-xs text-slate-600 list-disc pl-5 space-y-0.5">
+            {uploads.map((u) => (
+              <li key={u.id}>
+                {u.filename} <span className="text-slate-400">({Math.round(u.size / 1024)} KB)</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* CV inputs */}
-      <div className="flex flex-col gap-4">
+      <div className="mt-4 flex flex-col gap-4">
         {cvs.map((cv, i) => (
           <div key={i} className="relative">
             <textarea
               className="mt-2 w-full h-24 rounded-xl border border-slate-300 p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              placeholder={`CV ${i + 1} text...`}
+              placeholder={`CV ${i + 1} text... (optional if you uploaded PDFs)`}
               value={cv}
               onChange={(e) => updateCv(i, e.target.value)}
             />
@@ -559,13 +630,16 @@ function DemoBox({
       {/* Actions */}
       <div className="mt-4 flex items-center justify-between">
         <span className="text-xs text-slate-500">Will create Job → add Candidate(s) → run Scoring</span>
-        <button
-          onClick={handleRun}
-          disabled={loading}
-          className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-60"
-        >
-          {loading ? "Scoring…" : "Run mock score"}
-        </button>
+        <div className="flex items-center gap-3">
+          <MiniViewerToggle value={viewerMode} onChange={setViewerMode} />
+          <button
+            onClick={handleRun}
+            disabled={loading}
+            className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-60"
+          >
+            {loading ? "Scoring…" : "Run score"}
+          </button>
+        </div>
       </div>
 
       {/* Error */}
@@ -583,22 +657,66 @@ function DemoBox({
               <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Batch</div>
               <div className="mt-1 text-sm text-emerald-900">{result.batch_id}</div>
             </div>
-            <ViewerToggle value={viewerMode} onChange={setViewerMode} />
+            <MiniViewerToggle value={viewerMode} onChange={setViewerMode} />
           </div>
 
           {result.scores?.map((s: any) => {
-            const perCandFlags = (result.ethics_flags || [])
-              .filter((f: any) => f.candidate_id === s.candidate_id)
-              .map(asFlagObj) as AnyFlag[];
+            const flagsRow = (result.ethics_flags || []).find((f: any) => f.candidate_id === s.candidate_id);
+            const labels: string[] = flagsRow?.flags || [];
             return (
-              <ScoreCard
-                key={s.candidate_id}
-                candidateId={s.display_name || s.candidate_id}
-                total={s.total >= 99 ? 99 : s.total}
-                by={s.by_criterion}
-                flags={perCandFlags}
-                viewerMode={viewerMode}
-              />
+              <div key={s.candidate_id} className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900">{s.display_name || s.candidate_id}</div>
+                    <div className="mt-0.5 text-xs text-slate-500">{s.candidate_id}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-2xl font-semibold text-slate-900">{Math.min(s.total, 99).toFixed(1)}</div>
+                    <div className="text-xs text-slate-500">Total</div>
+                  </div>
+                </div>
+
+                {/* simple bars */}
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {s.by_criterion?.map((c: any) => (
+                    <div key={c.criterion}>
+                      <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
+                        <span>{c.criterion}</span>
+                        <span className="font-medium text-slate-900">{c.score.toFixed(1)}</span>
+                      </div>
+                      <div className="h-2 w-full rounded bg-slate-100">
+                        <div className="h-2 rounded bg-slate-900" style={{ width: `${Math.min(100, Math.max(0, c.score))}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* tiny evidence-ish block to match prior copy */}
+                <div className="mt-3 text-xs text-slate-600">
+                  No brand influence detected.<br />
+                  <span className="text-slate-500">Next step:</span> Proceed with structured interview on rubric areas.
+                </div>
+
+                {/* flags */}
+                {labels.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {labels.map((fl, i) => (
+                      <span
+                        key={i}
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ring-1 ${
+                          /large|major/i.test(fl)
+                            ? "bg-rose-50 text-rose-700 ring-rose-200"
+                            : /instability|proxy|moderate/i.test(fl)
+                            ? "bg-amber-50 text-amber-700 ring-amber-200"
+                            : "bg-slate-100 text-slate-700 ring-slate-200"
+                        }`}
+                      >
+                        {fl}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
@@ -606,7 +724,6 @@ function DemoBox({
     </div>
   );
 }
-
 
 /* ---------------- Minimal icons & logo ---------------- */
 function ShieldIcon({ className = "h-5 w-5" }: { className?: string }) { return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7l7-4z" /><path d="M9 12l2 2 4-4" strokeLinecap="round" /></svg>; }
