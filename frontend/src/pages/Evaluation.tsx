@@ -2,15 +2,67 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { getReport } from "../lib/api";
 import type { ViewerMode } from "../lib/viewer";
-import type { CandidateScore, AnyFlag } from "../lib/format";
 import AdvancedScoreCard from "../components/AdvancedScoreCard";
 
-import type { ReportPayload } from "../types/report";
-import { loadMockReport } from "../utils/mockStorage";
+/* ---------------------------------------------
+   Local minimal types (to avoid missing exports)
+   --------------------------------------------- */
+type ScoreBreakdown = { criterion: string; score: number };
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000/api/v1";
+type CandidateScore = {
+  candidate_id: string;
+  display_name?: string;
+  total_after?: number;
+  total_before?: number;
+  by_criterion?: ScoreBreakdown[];
+  // mock-only extras used by the tie-breaker / UX:
+  core_coverage?: number;
+  why?: string[];
+  missing?: string[];
+  cap_applied?: boolean;
+};
 
-/* ---------- tiny inline Tooltip (no external import needed) ---------- */
+type EthicsFlagsRow = { candidate_id: string; flags: string[] };
+
+type ReportPayload = {
+  batch_id: string;
+  k?: number;
+  n_candidates?: number;
+  spearman_rho?: number;
+  topk_overlap_count?: number;
+  topk_overlap_ratio?: number;
+  mean_abs_delta?: number;
+  flags_by_type?: Record<string, number>;
+  flags_by_severity?: Record<string, number>;
+  candidates: Array<{
+    candidate_id: string;
+    display_name?: string;
+    score: { overall: number; fairness: number; transparency: number };
+    flags?: string[];
+    // mock-only extras:
+    core_coverage?: number;
+    why?: string[];
+    missing?: string[];
+    cap_applied?: boolean;
+  }>;
+};
+
+/* -------- tiny storage fallback for mock data -------- */
+function loadMockReport(id: string): ReportPayload | null {
+  try {
+    const raw = localStorage.getItem(`report:${id}`);
+    return raw ? (JSON.parse(raw) as ReportPayload) : null;
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------ env (vite) fallback ------------------ */
+const API_BASE =
+  ((import.meta as any).env?.VITE_API_BASE as string | undefined) ||
+  "http://localhost:8000/api/v1";
+
+/* -------------------- tiny Tooltip -------------------- */
 function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
@@ -29,7 +81,7 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
   );
 }
 
-/* ---------- tiny inline ViewerToggle (avoid external import issues) ---------- */
+/* -------- inline ViewerToggle (avoids type issues) -------- */
 function MiniViewerToggle({
   value,
   onChange,
@@ -58,7 +110,7 @@ function MiniViewerToggle({
   );
 }
 
-/* ---------- flag knowledge base for rationale + action ---------- */
+/* ---- standardized flag blurbs for the ethics helper ---- */
 const FLAG_KB: Record<
   string,
   { title: string; rationale: string; action: string; severity?: "minor" | "moderate" | "major" }
@@ -77,7 +129,7 @@ const FLAG_KB: Record<
   },
   "Instability under blinding": {
     title: "Instability under blinding",
-    rationale: "Notable rank shift when sensitive tokens (e.g., names) are blinded — suggests fragile features.",
+    rationale: "Notable rank shift when sensitive tokens are blinded — suggests fragile features.",
     action: "Blind sensitive tokens in reviewer workflow; seek more task-relevant evidence.",
     severity: "moderate",
   },
@@ -92,17 +144,17 @@ const FLAG_KB: Record<
 export default function Evaluation() {
   const [batchId, setBatchId] = useState("");
   const [topK, setTopK] = useState<number | undefined>(undefined);
+  // allow "simple" for the page toggle, but we’ll adapt to a real ViewerMode when passing down
   const [viewerMode, setViewerMode] = useState<ViewerMode | "simple">("recruiter");
 
   const [data, setData] = useState<any | null>(null);
+  const [source, setSource] = useState<"backend" | "local" | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [source, setSource] = useState<"backend" | "local" | null>(null);
 
-  // Role context used for recommendation copy (persisted locally)
+  // role context kept locally for nicer recommendation copy
   const [jobContext, setJobContext] = useState<string>("");
 
-  // Auto-fill latest batch id + role context
   useEffect(() => {
     const latest = localStorage.getItem("latestBatchId");
     if (latest) setBatchId(latest);
@@ -110,13 +162,12 @@ export default function Evaluation() {
     setJobContext(jc);
   }, []);
 
-  // Auto-fetch when batchId changes
   useEffect(() => {
     if (batchId) void fetchReport();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batchId]);
 
-  const fetchReport = async () => {
+  async function fetchReport() {
     setLoading(true);
     setErr(null);
     setData(null);
@@ -129,16 +180,14 @@ export default function Evaluation() {
     }
 
     try {
-      // 1) Try backend first
       const r = await getReport(id, topK);
       const normalized = normalizeBackendToEvaluation(r);
       setData(normalized);
       setSource("backend");
     } catch (e: any) {
-      // 2) Fallback to locally cached canonical report from Landing
       const local = loadMockReport(id);
       if (local) {
-        const asEval = fromLocalCanonicalToEvaluation(local, topK, jobContext);
+        const asEval = fromLocalCanonicalToEvaluation(local, topK);
         setData(asEval);
         setSource("local");
       } else {
@@ -147,42 +196,53 @@ export default function Evaluation() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  // Sorted candidates (desc by total_after like your original)
-  const sortedCandidates: CandidateScore[] =
+  // Sort by total_after (desc)
+  let sortedCandidates: CandidateScore[] =
     data?.candidates?.slice().sort((a: CandidateScore, b: CandidateScore) => (b.total_after ?? 0) - (a.total_after ?? 0)) || [];
 
-  // Recommendation (top candidate + natural-language “why” + name)
+  // Tie-breaker (LOCAL mock only)
+  if (source === "local" && sortedCandidates.length >= 2) {
+    sortedCandidates = sortedCandidates.slice().sort((a: any, b: any) => {
+      const dv = (b.total_after ?? 0) - (a.total_after ?? 0);
+      if (Math.abs(dv) > 3) return dv;
+      const acore = a.core_coverage ?? 0;
+      const bcore = b.core_coverage ?? 0;
+      if (bcore !== acore) return bcore - acore;
+      const qcnt = (w?: string[]) => (w || []).filter((x) => /Testing|CI\/CD|Typing|OpenAPI/i.test(x)).length;
+      const aq = qcnt(a.why);
+      const bq = qcnt(b.why);
+      if (bq !== aq) return bq - aq;
+      const ap = (a.cap_applied ? 1 : 0) + ((a.missing || []).length ? 1 : 0);
+      const bp = (b.cap_applied ? 1 : 0) + ((b.missing || []).length ? 1 : 0);
+      return ap - bp;
+    });
+  }
+
+  // Recommendation box (top row + quick reasons)
   const recommendation = useMemo(() => {
     if (!sortedCandidates.length) return null;
-    const top: any = sortedCandidates[0];
-    const flagsForTop: AnyFlag[] = (data?.ethics_flags || []).filter(
-      (f: any) => f.candidate_id === top.candidate_id
+    const top = sortedCandidates[0];
+    const flagsRow: EthicsFlagsRow | undefined = (data?.ethics_flags || []).find(
+      (f: EthicsFlagsRow) => f.candidate_id === top.candidate_id
     );
-
-    // choose 2 strongest criteria by score
     const strongest = (top.by_criterion || [])
       .slice()
-      .sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0))
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
       .slice(0, 2);
+    const reasons: string[] = strongest.map((r) => `${r.criterion} (${fmt1(r.score)})`);
+    if (!flagsRow || !flagsRow.flags?.length) reasons.push("no adverse flags");
+    else reasons.push(`review flags: ${flagsRow.flags.join(", ")}`);
 
-    const reasons: string[] = strongest.map((r: any) => `${r.criterion} (${fmt1(r.score)})`);
-    if (!flagsForTop?.length || !flagsForTop[0]?.flags?.length) {
-      reasons.push("no adverse flags");
-    } else {
-      reasons.push(`review flags: ${flagsForTop[0].flags.join(", ")}`);
-    }
-
-    const name = top.display_name || top.candidate_id;
     return {
-      candidateLabel: name,
+      candidateLabel: top.display_name || top.candidate_id,
       overall: fmt1(top.total_after ?? 0),
       reasons,
     };
   }, [sortedCandidates, data]);
 
-  // Recruiter-friendly metric labels, tones, tooltips, short italic hints, and one-line desc
+  // Header metrics
   const headerMetrics = useMemo(() => {
     if (!data) return [];
     const items: Array<{
@@ -190,8 +250,8 @@ export default function Evaluation() {
       value: string | number;
       tooltip?: string;
       tone?: "good" | "warn" | "bad" | "default";
-      hint?: string; // italic parenthetical
-      desc?: string; // one-line explanation
+      hint?: string;
+      desc?: string;
     }> = [];
 
     items.push({
@@ -244,6 +304,9 @@ export default function Evaluation() {
     return items;
   }, [data]);
 
+  // Normalize "simple" → "recruiter" when passing to components that want ViewerMode
+  const normalizedMode: ViewerMode = (viewerMode === "simple" ? "recruiter" : viewerMode) as ViewerMode;
+
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-6xl p-6 space-y-6">
@@ -267,7 +330,7 @@ export default function Evaluation() {
           </div>
         </div>
 
-        {/* Role context (used to justify recommendation) */}
+        {/* Role context */}
         <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -365,7 +428,38 @@ export default function Evaluation() {
               Candidate <span className="font-semibold">{recommendation.candidateLabel}</span>{" "}
               appears to be the best fit (overall {recommendation.overall}).
             </div>
-            <ul className="mt-1 text-sm text-emerald-900 list-disc pl-5">
+
+            {/* “very close” blurb if top-2 are within 2 pts */}
+            {(() => {
+              if (!data?.candidates || data.candidates.length < 2) return null;
+              const sorted = [...data.candidates].sort(
+                (a: any, b: any) => (b.total_after ?? 0) - (a.total_after ?? 0)
+              );
+              const top = sorted[0];
+              const second = sorted[1];
+              const diff = Math.abs((top.total_after ?? 0) - (second.total_after ?? 0));
+              if (diff > 2.0) return null;
+
+              const qCnt = (arr?: string[]) =>
+                (arr || []).filter((w) => /Testing|CI\/CD|Typing|OpenAPI/i.test(w)).length;
+              const bullets: string[] = [];
+              if ((top.core_coverage ?? 0) !== (second.core_coverage ?? 0))
+                bullets.push(`${top.display_name || top.candidate_id} shows higher core coverage`);
+              if (qCnt(top.why) !== qCnt(second.why))
+                bullets.push(`${top.display_name || top.candidate_id} has more quality signals (Testing/CI/OpenAPI/Typing)`);
+              const topPen = (top.cap_applied ? 1 : 0) + ((top.missing || []).length ? 1 : 0);
+              const secPen = (second.cap_applied ? 1 : 0) + ((second.missing || []).length ? 1 : 0);
+              if (topPen !== secPen) bullets.push(`${top.display_name || top.candidate_id} has fewer penalties`);
+              return (
+                <div className="mt-2 text-xs text-emerald-800">
+                  <em>Very close:</em> chose <strong>{top.display_name || top.candidate_id}</strong> over{" "}
+                  <strong>{second.display_name || second.candidate_id}</strong>
+                  {bullets.length ? ` because ${bullets.join("; ")}.` : "."}
+                </div>
+              );
+            })()}
+
+            <ul className="mt-2 text-sm text-emerald-900 list-disc pl-5">
               {recommendation.reasons.map((r, i) => (
                 <li key={i}>{r}</li>
               ))}
@@ -390,7 +484,7 @@ export default function Evaluation() {
               ))}
             </div>
 
-            {/* Flags overview with helper lines */}
+            {/* Flags overview */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <div>
                 <div className="mb-1 text-xs text-slate-500">
@@ -398,7 +492,6 @@ export default function Evaluation() {
                 </div>
                 <FlagSummary title="Flags by type" flags={data?.flags_by_type} />
               </div>
-
               <div>
                 <div className="mb-1 text-xs text-slate-500">Grouped by severity (if provided by backend).</div>
                 {data?.flags_by_severity && Object.keys(data.flags_by_severity).length > 0 ? (
@@ -414,21 +507,37 @@ export default function Evaluation() {
             {/* Candidates + ethics review helper */}
             <div className="grid grid-cols-1 gap-4 mt-4">
               {sortedCandidates.map((cand: CandidateScore) => {
-                const candFlagsRaw: AnyFlag[] = (data.ethics_flags || []).filter(
-                  (f: any) => f.candidate_id === (cand as any).candidate_id
-                );
-                const labels: string[] = (candFlagsRaw?.[0]?.flags as string[]) || [];
-                const enriched = labels
-                  .map((label) => FLAG_KB[label])
-                  .filter(Boolean) as Array<{ title: string; rationale: string; action: string; severity?: string }>;
+                // get labels from the ethics_flags row (if present)
+                const labels: string[] =
+                  ((data.ethics_flags || []).find(
+                    (f: EthicsFlagsRow) => f.candidate_id === cand.candidate_id
+                  )?.flags as string[]) || [];
+
+                // convert to a minimal shape the card can accept (the card expects AnyFlag[])
+                const cardFlags = [{ candidate_id: cand.candidate_id, flags: labels }];
+
+                // enrich for the helper panel
+                const enriched =
+                  labels
+                    .map((label) => FLAG_KB[label])
+                    .filter(Boolean) as Array<{
+                      title: string;
+                      rationale: string;
+                      action: string;
+                      severity?: string;
+                    }>;
+
+                // We cast flags to any[] to satisfy AdvancedScoreCard's prop type,
+                // without changing the shared component.
+                const AdaptedCard = AdvancedScoreCard as unknown as React.FC<{
+                  candidate: CandidateScore;
+                  flags: any[];
+                  viewerMode: ViewerMode;
+                }>;
 
                 return (
-                  <div key={(cand as any).candidate_id} className="grid gap-2">
-                    <AdvancedScoreCard
-                      candidate={cand}
-                      flags={candFlagsRaw}
-                      viewerMode={viewerMode}
-                    />
+                  <div key={`cand-${cand.candidate_id}`} className="grid gap-2">
+                    <AdaptedCard candidate={cand} flags={cardFlags as any[]} viewerMode={normalizedMode} />
 
                     {labels.length > 0 && (
                       <div className="rounded-lg bg-white p-4 ring-1 ring-slate-200">
@@ -436,7 +545,7 @@ export default function Evaluation() {
                         <ul className="mt-2 space-y-2">
                           {enriched.length > 0 ? (
                             enriched.map((f, idx) => (
-                              <li key={idx} className="text-sm text-slate-700">
+                              <li key={`flag-${idx}`} className="text-sm text-slate-700">
                                 <div className="flex items-center gap-2">
                                   <span
                                     className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${
@@ -477,8 +586,7 @@ export default function Evaluation() {
         {!loading && !err && !data && (
           <div className="text-slate-600">
             <p>
-              Enter a Batch ID or click “Compute report” after pasting one. To generate one, run the demo on the
-              Landing page first.
+              Enter a Batch ID or click “Compute report”. To generate one, run the demo on the Landing page first.
             </p>
           </div>
         )}
@@ -487,12 +595,12 @@ export default function Evaluation() {
         <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
           <div className="text-sm font-semibold text-slate-900">What am I seeing?</div>
           <ul className="mt-2 text-sm text-slate-600 list-disc pl-5 space-y-1">
-            <li><strong>Rank stability (ρ):</strong> Similarity of rankings vs. a reference (previous or blinded run). ≥0.90 is very stable.</li>
-            <li><strong>Top-K consistency:</strong> How many candidates remain in the Top-K compared to the reference (shortlist robustness).</li>
-            <li><strong>Avg. rank shift:</strong> Average positions moved up/down vs. the reference; ≤1 is very stable.</li>
-            <li><strong>Fairness score:</strong> Robustness of the ranking to <em>sensitive attributes</em> via blinding/counterfactual tests. Higher = less influence from non-job signals.</li>
-            <li><strong>Transparency score:</strong> How well decisions are supported by <em>quoted evidence</em> and clear rationales. Higher = more explainable decisions.</li>
-            <li><strong>Source:</strong> “Local mock” means demo data cached in your browser (from the Landing run).</li>
+            <li><strong>Rank stability (ρ):</strong> Similarity vs. a reference (previous/blinded). ≥0.90 is very stable.</li>
+            <li><strong>Top-K consistency:</strong> How many candidates remain in the Top-K vs. the reference.</li>
+            <li><strong>Avg. rank shift:</strong> Average places moved up/down vs. the reference (lower is better).</li>
+            <li><strong>Fairness:</strong> Robustness to sensitive attributes via probes.</li>
+            <li><strong>Transparency:</strong> Decisions backed by quoted evidence and clear rationales.</li>
+            <li><strong>Source:</strong> “Local mock” = data cached from the Landing run.</li>
           </ul>
         </div>
       </div>
@@ -500,17 +608,20 @@ export default function Evaluation() {
   );
 }
 
-/* ---------- helpers: normalization & fallbacks ---------- */
+/* --------------- helpers: normalization & fallbacks --------------- */
 function normalizeBackendToEvaluation(x: any) {
   const batch_id = x?.batch_id ?? `batch_${Date.now()}`;
   const k = x?.k ?? 5;
   const n_candidates = x?.n_candidates ?? (Array.isArray(x?.candidates) ? x.candidates.length : undefined);
 
-  const candidates: CandidateScore[] = Array.isArray(x?.candidates) ? x.candidates : [];
-  const ethics_flags = Array.isArray(x?.ethics_flags) ? x.ethics_flags : [];
+  const candidates: CandidateScore[] = Array.isArray(x?.candidates)
+    ? x.candidates.map((c: any) => ({
+        ...c,
+        total_after: c.total_after ?? c.total ?? 0,
+      }))
+    : [];
 
-  const flags_by_type = x?.flags_by_type ?? undefined;
-  const flags_by_severity = x?.flags_by_severity ?? undefined;
+  const ethics_flags: EthicsFlagsRow[] = Array.isArray(x?.ethics_flags) ? x.ethics_flags : [];
 
   return {
     batch_id,
@@ -520,40 +631,40 @@ function normalizeBackendToEvaluation(x: any) {
     topk_overlap_count: typeof x?.topk_overlap_count === "number" ? x.topk_overlap_count : undefined,
     topk_overlap_ratio: typeof x?.topk_overlap_ratio === "number" ? x.topk_overlap_ratio : undefined,
     mean_abs_delta: typeof x?.mean_abs_delta === "number" ? x.mean_abs_delta : undefined,
-    flags_by_type,
-    flags_by_severity,
+    flags_by_type: x?.flags_by_type ?? undefined,
+    flags_by_severity: x?.flags_by_severity ?? undefined,
     ethics_flags,
     candidates,
   };
 }
 
-function fromLocalCanonicalToEvaluation(report: ReportPayload, topK?: number, jobContext?: string) {
+function fromLocalCanonicalToEvaluation(report: ReportPayload, topK?: number) {
   const k = topK ?? 5;
 
-  // Build CandidateScore-like objects from canonical shape
-  const candidates: CandidateScore[] = report.candidates.map((c: any) => {
+  const candidates: CandidateScore[] = report.candidates.map((c) => {
     const total_after = round1(c.score.overall);
     const by_criterion = [
       { criterion: "Fairness", score: round1(c.score.fairness) },
       { criterion: "Transparency", score: round1(c.score.transparency) },
     ];
     return {
-      ...( {} as CandidateScore ),
       candidate_id: c.candidate_id,
-      display_name: c.display_name, // keep name if present
+      display_name: c.display_name,
       total_after,
-      total_before: total_after, // no pre/post delta in mock
+      total_before: total_after,
       by_criterion,
+      core_coverage: c.core_coverage,
+      why: c.why,
+      missing: c.missing,
+      cap_applied: c.cap_applied,
     };
   });
 
-  // flags list similar to backend shape used by UI
-  const ethics_flags = report.candidates.map((c: any) => ({
+  const ethics_flags: EthicsFlagsRow[] = report.candidates.map((c) => ({
     candidate_id: c.candidate_id,
     flags: c.flags ?? [],
   }));
 
-  // summaries
   const allFlags = ethics_flags.flatMap((f) => f.flags || []);
   const flags_by_type = allFlags.reduce((acc: Record<string, number>, f: string) => {
     acc[f] = (acc[f] || 0) + 1;
@@ -561,13 +672,16 @@ function fromLocalCanonicalToEvaluation(report: ReportPayload, topK?: number, jo
   }, {});
   const flags_by_severity = report.flags_by_severity ?? undefined;
 
-  // mock overlap/shift metrics if missing
-  const spearman_rho = typeof report.spearman_rho === "number" ? report.spearman_rho : round2(0.8 + Math.random() * 0.15);
-  const topk_overlap_count = typeof report.topk_overlap_count === "number" ? report.topk_overlap_count : Math.min(k, candidates.length, 3);
-  const topk_overlap_ratio = typeof report.topk_overlap_ratio === "number"
-    ? report.topk_overlap_ratio
-    : (candidates.length ? topk_overlap_count / Math.min(k, candidates.length) : 0);
-  const mean_abs_delta = typeof report.mean_abs_delta === "number" ? report.mean_abs_delta : round2(Math.random() * 2 + 1);
+  const spearman_rho =
+    typeof report.spearman_rho === "number" ? report.spearman_rho : round2(0.8 + Math.random() * 0.15);
+  const topk_overlap_count =
+    typeof report.topk_overlap_count === "number" ? report.topk_overlap_count : Math.min(k, candidates.length, 3);
+  const topk_overlap_ratio =
+    typeof report.topk_overlap_ratio === "number"
+      ? report.topk_overlap_ratio
+      : (candidates.length ? topk_overlap_count / Math.min(k, candidates.length) : 0);
+  const mean_abs_delta =
+    typeof report.mean_abs_delta === "number" ? report.mean_abs_delta : round2(Math.random() * 2 + 1);
 
   return {
     batch_id: report.batch_id,
@@ -581,11 +695,10 @@ function fromLocalCanonicalToEvaluation(report: ReportPayload, topK?: number, jo
     flags_by_severity,
     ethics_flags,
     candidates,
-    job_context: jobContext || undefined,
   };
 }
 
-/* ---------- small UI atoms ---------- */
+/* ---------------- small UI atoms ---------------- */
 function Stat({
   label,
   value,
@@ -644,7 +757,7 @@ function FlagSummary({ title, flags }: { title: string; flags: Record<string, nu
   );
 }
 
-/* ---------- tiny utils ---------- */
+/* ---------------- tiny utils ---------------- */
 function round1(n: number) { return Number((+n || 0).toFixed(1)); }
 function round2(n: number) { return Number((+n || 0).toFixed(2)); }
 function fmt1(n: number) { return round1(n).toFixed(1); }

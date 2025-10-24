@@ -3,7 +3,11 @@ from ..schemas.candidate import CandidatesResponse, CandidateSummary
 import json
 from pathlib import Path
 
-router = APIRouter(prefix="/api/v1", tags=["candidates"])
+router = APIRouter(
+    prefix="/api/v1/candidates",
+    tags=["candidates"],
+    redirect_slashes=True
+)
 
 SEED = Path(__file__).resolve().parents[2] / "seed" / "candidates.json"
 

@@ -1,4 +1,4 @@
-// src/pages/Landing.tsx
+// frontend/src/pages/Landing.tsx
 import React, { useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
@@ -144,8 +144,8 @@ export default function HirethicsLanding() {
         <section id="features" className="bg-white border-y border-slate-200 -mx-6 px-6 py-16">
           <h3 className="text-2xl font-semibold text-slate-900">What makes Hirethics different</h3>
           <div className="mt-8 grid gap-6 md:grid-cols-3">
-            <Feature title="Explainable scoring" desc="Every score ties to a quoted evidence span from the CV or artifact — no black boxes." icon={<EyeIcon />} />
-            <Feature title="Bias detection" desc="Automatic blinding & counterfactual tests highlight unstable rankings and proxy signals." icon={<ShieldIcon />} />
+            <Feature title="Explainable scoring" desc="Every score ties to a quoted evidence span from the CV — no black boxes." icon={<EyeIcon />} />
+            <Feature title="Bias detection" desc="Blinding & counterfactual tests highlight unstable rankings and proxy signals." icon={<ShieldIcon />} />
             <Feature title="Audit trail" desc="Immutable logs of scores, flags, and human overrides — exportable for stakeholders." icon={<TrailIcon />} />
           </div>
         </section>
@@ -267,6 +267,7 @@ function Dot() {
 }
 
 /* ---------------- DemoBox ---------------- */
+/* ---------------- DemoBox (seeded mock + name-aware) ---------------- */
 function DemoBox({
   viewerMode,
   setViewerMode,
@@ -279,24 +280,65 @@ function DemoBox({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
 
-  // ---- Helpers for mock scoring ----
+  /* ---- tiny seeded RNG utils (deterministic per inputs) ---- */
+  function xmur3(str: string) {
+    let h = 1779033703 ^ str.length;
+    for (let i = 0; i < str.length; i++) {
+      h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+      h = (h << 13) | (h >>> 19);
+    }
+    return function () {
+      h = Math.imul(h ^ (h >>> 16), 2246822507);
+      h = Math.imul(h ^ (h >>> 13), 3266489909);
+      return (h ^= h >>> 16) >>> 0;
+    };
+  }
+  function mulberry32(a: number) {
+    return function () {
+      let t = (a += 0x6D2B79F5);
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const randInt = (rng: () => number, lo: number, hi: number) =>
+    Math.floor(rng() * (hi - lo + 1)) + lo;
+  const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+
+  /* ---- name + signals helpers ---- */
   function extractName(cv: string) {
-    const line = (cv.split("\n").map((s) => s.trim()).find(Boolean) || "").replace(/^[-–•*#\s]+/, "");
-    return line.length > 2 && line.length < 80 ? line : null;
+    const cand = (cv.split("\n").map((s) => s.trim()).find(Boolean) || "").replace(/^[-–•*#\s]+/, "");
+    return cand && cand.length <= 80 ? cand : null;
   }
+
+  // very simple keyword detector used for fit bonus
+  function detectSignals(text: string) {
+    const t = text.toLowerCase();
+    return {
+      python: +/python/.test(t),
+      fastapi: +/fastapi/.test(t),
+      flask: +/flask/.test(t),
+      sql: +/(postgres|sql|sqlalchemy)/.test(t),
+      rag: +/(rag|pgvector|langchain|llamaindex|retrieval)/.test(t),
+      react: +/react/.test(t),
+      ts: +/(typescript|ts)/.test(t),
+      testing: +/(pytest|playwright|unit test|e2e|testing)/.test(t),
+      ci: +/(github actions|ci\/cd|pipeline)/.test(t),
+      docs: +/(openapi|pydantic|schema|typed dto)/.test(t),
+      design: +/(system design|architecture|scalab|design)/.test(t),
+    };
+  }
+
+  // role-weighted bonus (core weighted double, extras single), capped
   function fitBonus(cvText: string, roleContext: string) {
-    const text = `${cvText}\n${roleContext}`.toLowerCase();
-    let pts = 0;
-    if (/(python)/.test(text)) pts += 4;
-    if (/(fastapi|flask)/.test(text)) pts += 4;
-    if (/(postgres|sql)/.test(text)) pts += 3;
-    if (/(rag|llm|pgvector|langchain|llamaindex)/.test(text)) pts += 4;
-    if (/(react)/.test(text)) pts += 2;
-    if (/(typescript)/.test(text)) pts += 1;
-    if (/(pytest|testing)/.test(text)) pts += 1;
-    if (/(github actions|ci)/.test(text)) pts += 1;
-    return Math.min(pts, 20);
+    const t = `${cvText}\n${roleContext}`;
+    const s = detectSignals(t);
+    const coreHits = s.python + (s.fastapi || s.flask ? 1 : 0) + s.sql + s.rag + s.react + s.ts;
+    const extras = s.testing + s.ci + s.docs + s.design;
+    const raw = coreHits * 2 + extras * 1;
+    return Math.min(Math.round(raw), 12);
   }
+
   type MockFlag = { label: string; severity: "minor" | "moderate" | "major" };
   const FLAG_CATALOG: MockFlag[] = [
     { label: "Minor bias detected", severity: "minor" },
@@ -304,69 +346,80 @@ function DemoBox({
     { label: "Instability under blinding", severity: "moderate" },
     { label: "Large rank shift under counterfactual", severity: "major" },
   ];
-  function sampleFlags(): MockFlag[] {
-    const r = Math.random();
-    const n = r < 0.5 ? 0 : r < 0.85 ? 1 : 2;
-    return [...FLAG_CATALOG].sort(() => Math.random() - 0.5).slice(0, n);
-  }
-  function clamp(n: number, lo: number, hi: number) {
-    return Math.max(lo, Math.min(hi, n));
+
+  function sampleFlags(rng: () => number): MockFlag[] {
+    const r = rng();
+    const n = r < 0.55 ? 0 : r < 0.88 ? 1 : 2; // mostly none/one
+    // shuffle deterministically-ish using rng
+    const arr = [...FLAG_CATALOG];
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr.slice(0, n);
   }
 
-  // Role-aware, name-aware mock scoring
+  /* ---- seeded, role-aware mock scoring ---- */
   function mockScoring(
     cands: { id: string; cv_text: string; display_name: string }[],
-    roleCtx: string
+    roleCtx: string,
+    seedInput: string
   ) {
-    const raw = cands.map(({ id, cv_text, display_name }) => {
-      const base = Math.floor(60 + Math.random() * 40);
-      const bonus = fitBonus(cv_text, roleCtx);
-      let total = Math.min(base + bonus, 100);
+    const seedFn = xmur3(seedInput);
+    const rng = mulberry32(seedFn());
 
-      const picks = sampleFlags();
-      const hasMajor = picks.some((p) => p.severity === "major");
-      if (hasMajor) total = Math.max(total - 4, 0);
+    const raw = cands.map(({ id, cv_text, display_name }, idx) => {
+      const base = randInt(rng, 60, 85); // keep base reasonable
+      const bonus = fitBonus(cv_text, roleCtx); // 0..12
+      let total = clamp(base + bonus, 40, 99); // cap at 99 (no “perfect 100”)
+
+      const picks = sampleFlags(rng);
+      if (picks.some((p) => p.severity === "major")) total = Math.max(total - 4, 0);
 
       return {
         candidate_id: id,
         display_name,
         total,
         by_criterion: [
-          { criterion: "System Design", score: Math.floor(20 + Math.random() * 10) },
-          { criterion: "Experience", score: Math.floor(20 + Math.random() * 10) },
-          { criterion: "Skills", score: Math.floor(20 + Math.random() * 10) },
+          { criterion: "System Design", score: randInt(rng, 20, 30) },
+          { criterion: "Experience", score: randInt(rng, 20, 30) },
+          { criterion: "Skills", score: randInt(rng, 20, 30) },
         ],
         flags: picks,
       };
     });
 
+    // summaries
     const flags_by_type: Record<string, number> = {};
     const flags_by_severity: Record<string, number> = { minor: 0, moderate: 0, major: 0 };
-    raw.forEach((r) => {
+    raw.forEach((r) =>
       r.flags.forEach((f) => {
         flags_by_type[f.label] = (flags_by_type[f.label] || 0) + 1;
         flags_by_severity[f.severity] = (flags_by_severity[f.severity] || 0) + 1;
-      });
-    });
+      })
+    );
 
-    const batch_id = `batch_mock_${Date.now()}`;
+    // stability-esque numbers (seeded)
     const n_candidates = cands.length;
-    const spearman_rho = +(0.82 + Math.random() * 0.12).toFixed(2);
-    const topKDefault = 5;
-    const overlap = Math.min(3, n_candidates);
+    const spearman_rho = +(0.82 + rng() * 0.12).toFixed(2);
+    const k = 5;
+    const overlap = Math.min(randInt(rng, 2, Math.min(3, n_candidates)), n_candidates);
     const topk_overlap_count = overlap;
-    const topk_overlap_ratio = +(overlap / Math.min(topKDefault, n_candidates || 1)).toFixed(2);
-    const mean_abs_delta = +(Math.random() * 1.5 + 0.4).toFixed(2);
+    const topk_overlap_ratio = +(overlap / Math.min(k, n_candidates || 1)).toFixed(2);
+    const mean_abs_delta = +(rng() * 1.5 + 0.4).toFixed(2);
 
     return {
-      batch_id,
+      batch_id: `batch_mock_${Date.now()}`,
       scores: raw.map((r) => ({
         candidate_id: r.candidate_id,
         display_name: r.display_name,
         total: r.total,
         by_criterion: r.by_criterion,
       })),
-      ethics_flags: raw.map((r) => ({ candidate_id: r.candidate_id, flags: r.flags.map((f) => f.label) })),
+      ethics_flags: raw.map((r) => ({
+        candidate_id: r.candidate_id,
+        flags: r.flags.map((f) => f.label),
+      })),
       flags_by_type,
       flags_by_severity,
       n_candidates,
@@ -374,14 +427,17 @@ function DemoBox({
       topk_overlap_count,
       topk_overlap_ratio,
       mean_abs_delta,
+      // store seed so Evaluation could reproduce if needed
+      _seed: seedInput,
     };
   }
 
-  // Convert to canonical report for Evaluation fallback (includes display_name)
   function toCanonicalReport(mock: any) {
+    // derive fairness/transparency from total (seeded feel not needed here)
+    const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
     const candidates = (mock.scores || []).map((s: any) => {
-      const fairness = clamp(Math.round(s.total - 5 + Math.random() * 10), 50, 95);
-      const transparency = clamp(Math.round(s.total - 8 + Math.random() * 12), 50, 95);
+      const fairness = clamp(Math.round(s.total - 5 + Math.random() * 8), 55, 95);
+      const transparency = clamp(Math.round(s.total - 8 + Math.random() * 10), 55, 95);
       const candidate_id = s.candidate_id;
       const found = (mock.ethics_flags || []).find((f: any) => f.candidate_id === candidate_id);
       return {
@@ -402,6 +458,7 @@ function DemoBox({
       candidates,
       flags_by_type: mock.flags_by_type,
       flags_by_severity: mock.flags_by_severity,
+      _seed: mock._seed,
     };
   }
 
@@ -418,28 +475,26 @@ function DemoBox({
         return;
       }
 
-      let data;
+      let data: any;
       try {
-        // Real backend payload expects [{ cv_text }]
         const candidatesPayload = cvsToSend.map((cv_text) => ({ cv_text }));
         const { candidate_ids } = await addCandidates(job_id, candidatesPayload);
         data = await runScoring(job_id, candidate_ids);
       } catch {
-        // fallback mock scoring with role context + names
         const roleCtx = localStorage.getItem("jobContext") || "";
         const candObjs = cvsToSend.map((cv, i) => ({
           id: `cand_mock_${i}`,
           cv_text: cv,
           display_name: extractName(cv) || `Candidate ${i + 1}`,
         }));
-        data = mockScoring(candObjs, roleCtx);
+        const seedInput = `${roleCtx}||${cvsToSend.join("||")}`; // reproducible per same inputs
+        data = mockScoring(candObjs, roleCtx, seedInput);
       }
 
-      // Persist for Evaluation page
       localStorage.setItem("demoBatch", JSON.stringify(data));
       localStorage.setItem("latestBatchId", data.batch_id);
 
-      // Save canonical report for offline Evaluation
+      // canonical for Evaluation fallback
       try {
         const canonical = toCanonicalReport(data);
         localStorage.setItem(`report:${data.batch_id}`, JSON.stringify(canonical));
@@ -473,7 +528,7 @@ function DemoBox({
 
   return (
     <div id="demo-box" className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-      {/* CV Inputs */}
+      {/* CV inputs */}
       <div className="flex flex-col gap-4">
         {cvs.map((cv, i) => (
           <div key={i} className="relative">
@@ -495,10 +550,7 @@ function DemoBox({
           </div>
         ))}
         {cvs.length < 5 && (
-          <button
-            onClick={addCvField}
-            className="px-3 py-1 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 text-sm"
-          >
+          <button onClick={addCvField} className="px-3 py-1 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 text-sm">
             + Add another CV
           </button>
         )}
@@ -516,14 +568,14 @@ function DemoBox({
         </button>
       </div>
 
-      {/* Error message */}
+      {/* Error */}
       {error && (
         <div className="mt-4 rounded-lg bg-rose-50 text-rose-800 text-sm p-3 ring-1 ring-rose-200">
           {error}
         </div>
       )}
 
-      {/* Result display */}
+      {/* Results */}
       {result && (
         <div className="mt-6 grid gap-4">
           <div className="rounded-xl bg-emerald-50 p-4 ring-1 ring-emerald-200 flex items-center justify-between">
@@ -535,14 +587,14 @@ function DemoBox({
           </div>
 
           {result.scores?.map((s: any) => {
-            const perCandFlags: AnyFlag[] = (result.ethics_flags || [])
+            const perCandFlags = (result.ethics_flags || [])
               .filter((f: any) => f.candidate_id === s.candidate_id)
-              .map(asFlagObj);
+              .map(asFlagObj) as AnyFlag[];
             return (
               <ScoreCard
                 key={s.candidate_id}
                 candidateId={s.display_name || s.candidate_id}
-                total={s.total}
+                total={s.total >= 99 ? 99 : s.total}
                 by={s.by_criterion}
                 flags={perCandFlags}
                 viewerMode={viewerMode}
@@ -554,6 +606,7 @@ function DemoBox({
     </div>
   );
 }
+
 
 /* ---------------- Minimal icons & logo ---------------- */
 function ShieldIcon({ className = "h-5 w-5" }: { className?: string }) { return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7l7-4z" /><path d="M9 12l2 2 4-4" strokeLinecap="round" /></svg>; }

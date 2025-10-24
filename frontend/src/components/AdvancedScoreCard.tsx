@@ -1,168 +1,168 @@
-// src/pages/Evaluation.tsx
-import React, { useState, useEffect } from "react";
-import { getReport } from "../lib/api";
-import type { ViewerMode } from "../lib/viewer";
-import type { CandidateScore, AnyFlag } from "../lib/format";
-import { asFlagObj } from "../lib/format";
-import ViewerToggle from "../components/ViewerToggle";
-import AdvancedScoreCard from "../components/AdvancedScoreCard";
+import React, { useMemo, useState } from "react";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000/api/v1";
+/** Who the card is rendered for */
+export type ViewerMode = "recruiter" | "ethics" | "dev";
 
-export default function Evaluation() {
-  const [batchId, setBatchId] = useState("");
-  const [topK, setTopK] = useState<number | undefined>(undefined);
-  const [viewerMode, setViewerMode] = useState<ViewerMode | "simple">("recruiter");
-  const [data, setData] = useState<any | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+/** Optional breakdown rows */
+export type ScoreBreakdown = { criterion: string; score: number };
 
-  const fetchReport = async () => {
-    setLoading(true);
-    setErr(null);
-    setData(null);
-    try {
-      const r = await getReport(batchId.trim(), topK);
-      setData(r);
-    } catch (e: any) {
-      setErr(e?.message || "Failed to fetch report. Is the backend running?");
-    } finally {
-      setLoading(false);
-    }
-  };
+/** Minimal candidate shape the card needs */
+export type CandidateScore = {
+  candidate_id: string;
+  display_name?: string;
+  total_after?: number;
+  total_before?: number;
+  by_criterion?: ScoreBreakdown[];
 
-  const sortedCandidates: CandidateScore[] = data?.candidates?.slice().sort((a, b) => b.total_after - a.total_after) || [];
+  /** mock/local-only extras (safe to be absent in backend runs) */
+  core_coverage?: number; // 0..6 ticks
+  why?: string[];         // highlight bullets
+  missing?: string[];     // gaps bullets
+  cap_applied?: boolean;  // “cap applied” note
+};
+
+/** Flags row (same shape used in the page) */
+export type EthicsFlagsRow = { candidate_id: string; flags: string[] };
+
+type Props = {
+  candidate: CandidateScore;
+  flags: EthicsFlagsRow[];
+  viewerMode: ViewerMode;
+};
+
+/* ---------- tiny UI atoms ---------- */
+function Pill({
+  children,
+  tone = "default",
+}: {
+  children: React.ReactNode;
+  tone?: "default" | "good" | "warn" | "bad";
+}) {
+  const map = {
+    default: "bg-slate-100 text-slate-700 ring-slate-200",
+    good: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+    warn: "bg-amber-50 text-amber-700 ring-amber-200",
+    bad: "bg-rose-50 text-rose-700 ring-rose-200",
+  } as const;
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${map[tone]}`}>
+      {children}
+    </span>
+  );
+}
+
+function Bar({ value }: { value: number }) {
+  const pct = Math.max(0, Math.min(100, Math.round(value)));
+  return (
+    <div className="h-2 w-full rounded bg-slate-100">
+      <div className="h-2 rounded bg-slate-900" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+/* ---------- main card ---------- */
+export default function AdvancedScoreCard({ candidate, flags, viewerMode }: Props) {
+  const total = candidate.total_after ?? 0;
+  const before = candidate.total_before ?? candidate.total_after ?? 0;
+  const delta = Math.round((total - before) * 10) / 10;
+  const name = candidate.display_name || candidate.candidate_id;
+
+  const top2 = useMemo(() => {
+    const rows = (candidate.by_criterion || []).slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    return rows.slice(0, 2);
+  }, [candidate.by_criterion]);
+
+  const flagLabels = (flags?.[0]?.flags as string[]) || [];
+
+  const qualitySignals = (candidate.why || []).filter((s) =>
+    /Testing|CI\/CD|Typing|OpenAPI/i.test(s)
+  );
+  const gaps = candidate.missing || [];
+  const core = Math.max(0, Math.min(6, candidate.core_coverage ?? 0)); // 0..6
+
+  const [open, setOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="mx-auto max-w-6xl p-6 space-y-6">
-
-        {/* Header with toggle */}
-        <div className="flex items-center justify-between gap-3">
-          <h1 className="text-2xl font-bold tracking-tight">Evaluation Dashboard</h1>
-          <div className="hidden sm:block">
-            <ViewerToggle value={viewerMode} onChange={setViewerMode} />
+    <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-slate-900">{name}</div>
+          <div className="mt-0.5 text-xs text-slate-500">{candidate.candidate_id}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-semibold text-slate-900">{total.toFixed(1)}</div>
+          <div className="text-xs text-slate-500">
+            {candidate.cap_applied ? <Pill tone="warn">cap applied</Pill> : null}{" "}
+            {delta !== 0 ? <span className="ml-1">Δ {delta > 0 ? "+" : ""}{delta.toFixed(1)}</span> : null}
           </div>
         </div>
-        <div className="sm:hidden">
-          <ViewerToggle value={viewerMode} onChange={setViewerMode} />
-        </div>
-
-        {/* Controls */}
-        <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200 flex flex-col sm:flex-row gap-3 items-end">
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-slate-700">Batch ID</label>
-            <input
-              className="mt-1 w-full rounded-md border border-slate-300 shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
-              placeholder="e.g., batch_1234abcd"
-              value={batchId}
-              onChange={(e) => setBatchId(e.target.value)}
-            />
-          </div>
-          <div className="w-28">
-            <label className="block text-sm font-medium text-slate-700">Top-K</label>
-            <input
-              type="number"
-              min={1}
-              value={topK ?? ""}
-              onChange={(e) => setTopK(e.target.value ? Number(e.target.value) : undefined)}
-              placeholder="default 5"
-              className="mt-1 w-full rounded-md border border-slate-300 shadow-sm focus:ring-emerald-500 focus:border-emerald-500"
-            />
-          </div>
-          <button
-            onClick={fetchReport}
-            disabled={!batchId || loading}
-            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-          >
-            {loading ? "Fetching…" : "Compute report"}
-          </button>
-
-          {data?.batch_id && (
-            <div className="ms-auto flex items-center gap-2">
-              <a
-                href={`${API_BASE}/audit/${data.batch_id}.json`}
-                className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 ring-1 ring-slate-300 hover:bg-slate-50"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Export JSON
-              </a>
-              <a
-                href={`${API_BASE}/audit/${data.batch_id}.csv`}
-                className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-900 ring-1 ring-slate-300 hover:bg-slate-50"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Export CSV
-              </a>
-            </div>
-          )}
-        </div>
-
-        {/* Stats */}
-        {data && (
-          <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <Stat label="Candidates" value={data.n_candidates} />
-              <Stat label="Spearman ρ (pre vs post blinding)" value={data.spearman_rho ?? "—"} />
-              <Stat label={`Top-${data.k} overlap`} value={`${data.topk_overlap_count} (${(data.topk_overlap_ratio * 100).toFixed(0)}%)`} />
-              <Stat label="Mean |Δ|" value={data.mean_abs_delta} />
-            </div>
-
-            {/* Flags overview */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <FlagSummary title="Flags by type" flags={data.flags_by_type} />
-              <FlagSummary title="Flags by severity" flags={data.flags_by_severity} />
-            </div>
-
-            {/* Candidate comparison */}
-            <div className="grid grid-cols-1 gap-4 mt-4">
-              {sortedCandidates.map((cand: CandidateScore) => {
-                const candFlags: AnyFlag[] = (data.ethics_flags || []).filter((f: any) => f.candidate_id === cand.candidate_id);
-                return (
-                  <AdvancedScoreCard
-                    key={cand.candidate_id}
-                    candidate={cand}
-                    flags={candFlags}
-                    viewerMode={viewerMode}
-                  />
-                );
-              })}
-            </div>
-          </>
-        )}
-
-        {err && <p className="text-sm text-rose-600">{err}</p>}
       </div>
-    </div>
-  );
-}
 
-/* ---------- Small reusable components ---------- */
-function Stat({ label, value }: { label: string; value: any }) {
-  return (
-    <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
-      <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-1 text-lg font-semibold text-slate-900">{String(value)}</div>
-    </div>
-  );
-}
+      {/* Criteria bars */}
+      {top2.length > 0 && (
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {top2.map((c) => (
+            <div key={c.criterion}>
+              <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
+                <span>{c.criterion}</span>
+                <span className="font-medium text-slate-900">{c.score.toFixed(1)}</span>
+              </div>
+              <Bar value={c.score} />
+            </div>
+          ))}
+        </div>
+      )}
 
-function FlagSummary({ title, flags }: { title: string; flags: Record<string, number> | undefined; }) {
-  return (
-    <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
-      <div className="text-sm font-semibold text-slate-900">{title}</div>
-      <ul className="mt-2 text-sm text-slate-700 space-y-1">
-        {flags
-          ? Object.entries(flags).map(([k, v]) => (
-              <li key={k} className="flex justify-between">
-                <span>{k}</span>
-                <span className="font-medium">{v}</span>
-              </li>
-            ))
-          : <li className="text-slate-400">None</li>}
-      </ul>
+      {/* Core coverage ticks */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-slate-500">Core coverage:</span>
+        {Array.from({ length: 6 }).map((_, i) => (
+          <span
+            key={i}
+            className={`h-2 w-5 rounded ${i < core ? "bg-slate-900" : "bg-slate-200"}`}
+            title={`${core}/6`}
+          />
+        ))}
+      </div>
+
+      {/* Signals / gaps / flags */}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {qualitySignals.map((q, i) => (
+          <Pill key={`q-${i}`} tone="good">{q}</Pill>
+        ))}
+        {gaps.map((g, i) => (
+          <Pill key={`g-${i}`} tone="bad">{g}</Pill>
+        ))}
+        {flagLabels.map((fl, i) => (
+          <Pill
+            key={`f-${i}`}
+            tone={/large|major/i.test(fl) ? "bad" : /instability|proxy|moderate/i.test(fl) ? "warn" : "default"}
+          >
+            {fl}
+          </Pill>
+        ))}
+      </div>
+
+      {/* Evidence drawer (viewer dependent label) */}
+      <div className="mt-3">
+        <button
+          className="text-xs rounded-lg px-2 py-1 ring-1 ring-slate-300 hover:bg-slate-50"
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? "Hide" : "Show"} {viewerMode === "recruiter" ? "evidence highlights" : "details"}
+        </button>
+
+        {open && (
+          <div className="mt-2 text-sm text-slate-700 space-y-1">
+            {candidate.why && candidate.why.length > 0 ? (
+              candidate.why.slice(0, 4).map((w, i) => <div key={i}>• {w}</div>)
+            ) : (
+              <div className="text-slate-500">No extra highlights provided.</div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

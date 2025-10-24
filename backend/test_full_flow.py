@@ -52,3 +52,18 @@ print("Audit JSON:", json.dumps(audit_json, indent=2))
 resp_audit_csv = requests.get(f"{BASE_URL}/audit/{batch_id}.csv")
 resp_audit_csv.raise_for_status()
 print("Audit CSV:\n", resp_audit_csv.text)
+# --- After fetching the audit JSON ---
+import requests
+import json
+
+audit_url = f"http://127.0.0.1:8000/api/v1/audit/{batch_id}.json"
+resp = requests.get(audit_url)
+audit_data = resp.json()
+
+print("\n--- Audit Summary ---")
+for r in audit_data["results"]:
+    cand_id = r["candidate_id"]
+    flags = r.get("flags", [])
+    # Simplify: just print type and severity
+    flag_summary = [(f["type"], f["severity"]) if isinstance(f, dict) else (f, "info") for f in flags]
+    print(f"Candidate {cand_id}: {flag_summary}")
