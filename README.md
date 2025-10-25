@@ -5,7 +5,6 @@ Hirethics AI is a small, end-to-end demo that **scores candidates on job-relevan
 ![License: Contact Author](https://img.shields.io/badge/license-contact--author-orange)
 
 ![Banner 1](frontend/static/images/banner1.png)
-![Banner 2](frontend/static/images/banner2.png)
 
 - **Recruiters & hiring managers** — get a simple, explainable overview of why a candidate ranks where they do, plus a light-touch ethics summary.
 - **Developers & AI practitioners** — see exactly how scoring, blinding, flagging, and evaluation are implemented, with clear API boundaries and a pluggable LLM scorer.
