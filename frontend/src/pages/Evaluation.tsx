@@ -1,29 +1,12 @@
-// frontend/src/pages/Evaluation.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { getReport } from "../lib/api";
-import type { ViewerMode } from "../lib/viewer";
-import AdvancedScoreCard from "../components/AdvancedScoreCard";
+import AdvancedScoreCard, {
+  type CandidateScore,
+  type EthicsFlagsRow,
+  type ViewerMode,
+} from "../components/AdvancedScoreCard";
 
-/* ---------------------------------------------
-   Local minimal types (to avoid missing exports)
-   --------------------------------------------- */
-type ScoreBreakdown = { criterion: string; score: number };
-
-type CandidateScore = {
-  candidate_id: string;
-  display_name?: string;
-  total_after?: number;
-  total_before?: number;
-  by_criterion?: ScoreBreakdown[];
-  // mock-only extras used by the tie-breaker / UX:
-  core_coverage?: number;
-  why?: string[];
-  missing?: string[];
-  cap_applied?: boolean;
-};
-
-type EthicsFlagsRow = { candidate_id: string; flags: string[] };
-
+/* -------- tiny storage fallback for mock data -------- */
 type ReportPayload = {
   batch_id: string;
   k?: number;
@@ -39,7 +22,6 @@ type ReportPayload = {
     display_name?: string;
     score: { overall: number; fairness: number; transparency: number };
     flags?: string[];
-    // mock-only extras:
     core_coverage?: number;
     why?: string[];
     missing?: string[];
@@ -47,7 +29,6 @@ type ReportPayload = {
   }>;
 };
 
-/* -------- tiny storage fallback for mock data -------- */
 function loadMockReport(id: string): ReportPayload | null {
   try {
     const raw = localStorage.getItem(`report:${id}`);
@@ -81,7 +62,7 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
   );
 }
 
-/* -------- inline ViewerToggle (avoids type issues) -------- */
+/* -------- inline ViewerToggle (avoids external deps) -------- */
 function MiniViewerToggle({
   value,
   onChange,
@@ -144,7 +125,7 @@ const FLAG_KB: Record<
 export default function Evaluation() {
   const [batchId, setBatchId] = useState("");
   const [topK, setTopK] = useState<number | undefined>(undefined);
-  // allow "simple" for the page toggle, but we’ll adapt to a real ViewerMode when passing down
+  /** allow "simple" for the UI toggle, normalize before passing to children */
   const [viewerMode, setViewerMode] = useState<ViewerMode | "simple">("recruiter");
 
   const [data, setData] = useState<any | null>(null);
@@ -304,7 +285,7 @@ export default function Evaluation() {
     return items;
   }, [data]);
 
-  // Normalize "simple" → "recruiter" when passing to components that want ViewerMode
+  // Normalize "simple" → "recruiter" for children
   const normalizedMode: ViewerMode = (viewerMode === "simple" ? "recruiter" : viewerMode) as ViewerMode;
 
   return (
@@ -429,7 +410,7 @@ export default function Evaluation() {
               appears to be the best fit (overall {recommendation.overall}).
             </div>
 
-            {/* “very close” blurb if top-2 are within 2 pts */}
+            {/* “very close” note if top-2 within 2 pts */}
             {(() => {
               if (!data?.candidates || data.candidates.length < 2) return null;
               const sorted = [...data.candidates].sort(
@@ -513,10 +494,10 @@ export default function Evaluation() {
                     (f: EthicsFlagsRow) => f.candidate_id === cand.candidate_id
                   )?.flags as string[]) || [];
 
-                // convert to a minimal shape the card can accept (the card expects AnyFlag[])
-                const cardFlags = [{ candidate_id: cand.candidate_id, flags: labels }];
+                // convert straight to the card’s expected flags shape
+                const cardFlags: EthicsFlagsRow[] = [{ candidate_id: cand.candidate_id, flags: labels }];
 
-                // enrich for the helper panel
+                // enrich copy for the helper panel (optional)
                 const enriched =
                   labels
                     .map((label) => FLAG_KB[label])
@@ -527,17 +508,13 @@ export default function Evaluation() {
                       severity?: string;
                     }>;
 
-                // We cast flags to any[] to satisfy AdvancedScoreCard's prop type,
-                // without changing the shared component.
-                const AdaptedCard = AdvancedScoreCard as unknown as React.FC<{
-                  candidate: CandidateScore;
-                  flags: any[];
-                  viewerMode: ViewerMode;
-                }>;
-
                 return (
                   <div key={`cand-${cand.candidate_id}`} className="grid gap-2">
-                    <AdaptedCard candidate={cand} flags={cardFlags as any[]} viewerMode={normalizedMode} />
+                    <AdvancedScoreCard
+                      candidate={cand}
+                      flags={cardFlags}
+                      viewerMode={normalizedMode}
+                    />
 
                     {labels.length > 0 && (
                       <div className="rounded-lg bg-white p-4 ring-1 ring-slate-200">

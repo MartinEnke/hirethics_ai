@@ -153,7 +153,7 @@ export default function HirethicsLanding() {
             <div>
               <h3 className="text-2xl font-semibold text-slate-900">Try a quick demo</h3>
               <p className="mt-3 text-slate-600">
-                Upload up to 5 **PDF** CVs or paste text to see a mock score with evidence and ethics flags.
+                Pick a <strong>role context</strong>, upload up to 5 <strong>PDF</strong> CVs or paste text, and run scoring.
               </p>
               <div className="mt-6 flex gap-3 flex-wrap">
                 <a href="#demo-box" className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-medium hover:bg-slate-800">
@@ -263,7 +263,7 @@ function Dot() {
   return <span className="h-2.5 w-2.5 rounded-full bg-slate-300 inline-block" />;
 }
 
-/* ---------------- DemoBox (PDF upload + text, seeded mock) ---------------- */
+/* ---------------- DemoBox (role-aware, PDF upload + text) ---------------- */
 function DemoBox({
   viewerMode,
   setViewerMode,
@@ -271,11 +271,47 @@ function DemoBox({
   viewerMode: ViewerMode;
   setViewerMode: (v: ViewerMode) => void;
 }) {
+  // role context that informs backend keyword overlays
+  const [roleContext, setRoleContext] = useState<string>(
+    "Backend + GenAI: Python + FastAPI, Postgres/SQL, RAG/LLMs (pgvector, LangChain/LlamaIndex), OpenAPI docs, Pytest + Playwright, CI/CD (GitHub Actions), system design/architecture; React + TypeScript for admin UIs. Emphasis on clean APIs, typed DTOs, retrieval quality, explainability and auditability."
+  );
+
+  // pasted entries only
   const [cvs, setCvs] = useState<string[]>([""]);
+
+  // uploaded PDFs (text only; names will be derived)
   const [uploads, setUploads] = useState<Array<{ id: string; filename: string; text: string; size: number }>>([]);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
+
+  const CRITERION_LABEL: Record<string, string> = {
+    sys_design: "System design",
+    prod_ownership: "Production ownership",
+    lang_stack: "Language / Stack",
+    code_quality: "Code quality",
+  };
+
+  /* Quick presets update roleContext */
+  const presets = [
+    {
+      name: "Backend + RAG",
+      text: "Backend + GenAI: Python + FastAPI, Postgres/SQL, RAG/LLMs (pgvector, LangChain/LlamaIndex), OpenAPI docs, Pytest + Playwright, CI/CD (GitHub Actions), system design/architecture.",
+    },
+    {
+      name: "Frontend",
+      text: "Frontend: React + TypeScript, Next.js, performance/accessibility, Testing Library/Jest/Playwright, CI/CD, Storybook, design systems.",
+    },
+    {
+      name: "Data",
+      text: "Data Engineer: Spark/Airflow/DBT, Kafka, Snowflake/BigQuery, strong SQL, data quality/lineage testing, CI/CD.",
+    },
+    {
+      name: "DevOps/Platform",
+      text: "DevOps/Platform: Kubernetes, Docker, Terraform, cloud (AWS/GCP/Azure), observability, SRE/SLOs, CI/CD pipelines.",
+    },
+  ];
 
   /* ---------- inline MiniViewerToggle ---------- */
   function MiniViewerToggle({
@@ -306,198 +342,50 @@ function DemoBox({
     );
   }
 
-  /* ---------------------- seeded RNG helpers ---------------------- */
-  function xmur3(str: string) {
-    let h = 1779033703 ^ str.length;
-    for (let i = 0; i < str.length; i++) {
-      h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
-      h = (h << 13) | (h >>> 19);
-    }
-    return function () {
-      h = Math.imul(h ^ (h >>> 16), 2246822507);
-      h = Math.imul(h ^ (h >>> 13), 3266489909);
-      return (h ^= h >>> 16) >>> 0;
-    };
-  }
-  function mulberry32(a: number) {
-    return function () {
-      let t = (a += 0x6D2B79F5);
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-  const randInt = (rng: () => number, lo: number, hi: number) =>
-    Math.floor(rng() * (hi - lo + 1)) + lo;
-  const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
-
-  /* ------------------ name + signals helpers ------------------ */
+  /* ---------------- name helper ---------------- */
   function extractName(cv: string) {
     const cand = (cv.split("\n").map((s) => s.trim()).find(Boolean) || "").replace(/^[-–•*#\s]+/, "");
     return cand && cand.length <= 80 ? cand : null;
   }
 
-  function detectSignals(text: string) {
-    const t = text.toLowerCase();
-    return {
-      python: +/python/.test(t),
-      fastapi: +/fastapi/.test(t),
-      flask: +/flask/.test(t),
-      sql: +/(postgres|sql|sqlalchemy)/.test(t),
-      rag: +/(rag|pgvector|langchain|llamaindex|retrieval)/.test(t),
-      react: +/react/.test(t),
-      ts: +/(typescript|ts)/.test(t),
-      testing: +/(pytest|playwright|unit test|e2e|testing)/.test(t),
-      ci: +/(github actions|ci\/cd|pipeline)/.test(t),
-      docs: +/(openapi|pydantic|schema|typed dto)/.test(t),
-      design: +/(system design|architecture|scalab|design)/.test(t),
-    };
-  }
-
-  function fitBonus(cvText: string, roleContext: string) {
-    const s = detectSignals(`${cvText}\n${roleContext}`);
-    const coreHits = s.python + (s.fastapi || s.flask ? 1 : 0) + s.sql + s.rag + s.react + s.ts;
-    const extras = s.testing + s.ci + s.docs + s.design;
-    const raw = coreHits * 2 + extras * 1;
-    return Math.min(Math.round(raw), 10);
-  }
-
-  type MockFlag = { label: string; severity: "minor" | "moderate" | "major" };
-  const FLAG_CATALOG: MockFlag[] = [
-    { label: "Minor bias detected", severity: "minor" },
-    { label: "Proxy signal suspected: brand", severity: "moderate" },
-    { label: "Instability under blinding", severity: "moderate" },
-    { label: "Large rank shift under counterfactual", severity: "major" },
-  ];
-
-  function sampleFlags(rng: () => number): MockFlag[] {
-    const r = rng();
-    const n = r < 0.6 ? 0 : r < 0.9 ? 1 : 2;
-    const arr = [...FLAG_CATALOG];
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr.slice(0, n);
-  }
-
-  /* ---------------- seeded, role-aware mock scoring ---------------- */
-  function mockScoring(
-    cands: { id: string; cv_text: string; display_name: string }[],
-    roleCtx: string,
-    seedInput: string
-  ) {
-    const seedFn = xmur3(seedInput);
-    const rng = mulberry32(seedFn());
-
-    const raw = cands.map(({ id, cv_text, display_name }) => {
-      const base = randInt(rng, 60, 84);
-      const bonus = fitBonus(cv_text, roleCtx);
-      let total = clamp(base + bonus, 45, 98);
-      const flags = sampleFlags(rng);
-      if (flags.some((f) => f.severity === "major")) total = Math.max(total - 4, 0);
-
-      return {
-        candidate_id: id,
-        display_name,
-        total,
-        by_criterion: [
-          { criterion: "System Design", score: randInt(rng, 20, 30) },
-          { criterion: "Experience", score: randInt(rng, 20, 30) },
-          { criterion: "Skills", score: randInt(rng, 20, 30) },
-        ],
-        flags,
-      };
-    });
-
-    const flags_by_type: Record<string, number> = {};
-    const flags_by_severity: Record<string, number> = { minor: 0, moderate: 0, major: 0 };
-    raw.forEach((r) =>
-      r.flags.forEach((f) => {
-        flags_by_type[f.label] = (flags_by_type[f.label] || 0) + 1;
-        flags_by_severity[f.severity] = (flags_by_severity[f.severity] || 0) + 1;
-      })
-    );
-
-    const n_candidates = cands.length;
-    const spearman_rho = +(0.82 + rng() * 0.12).toFixed(2);
-    const k = 5;
-    const overlap = Math.min(randInt(rng, 2, Math.min(3, n_candidates)), n_candidates);
-    const topk_overlap_count = overlap;
-    const topk_overlap_ratio = +(overlap / Math.min(k, n_candidates || 1)).toFixed(2);
-    const mean_abs_delta = +(rng() * 1.5 + 0.4).toFixed(2);
-
-    return {
-      batch_id: `batch_mock_${Date.now()}`,
-      scores: raw.map((r) => ({
-        candidate_id: r.candidate_id,
-        display_name: r.display_name,
-        total: r.total,
-        by_criterion: r.by_criterion,
-      })),
-      ethics_flags: raw.map((r) => ({
-        candidate_id: r.candidate_id,
-        flags: r.flags.map((f) => f.label),
-      })),
-      flags_by_type,
-      flags_by_severity,
-      n_candidates,
-      spearman_rho,
-      topk_overlap_count,
-      topk_overlap_ratio,
-      mean_abs_delta,
-      _seed: seedInput,
-    };
-  }
-
-  function toCanonicalReport(mock: any) {
-    const clampScore = (n: number) => Math.max(55, Math.min(95, n));
-    const candidates = (mock.scores || []).map((s: any) => {
-      const fairness = clampScore(Math.round(s.total - 6 + Math.random() * 8));
-      const transparency = clampScore(Math.round(s.total - 8 + Math.random() * 10));
-      const candidate_id = s.candidate_id;
-      const found = (mock.ethics_flags || []).find((f: any) => f.candidate_id === candidate_id);
-      return {
-        candidate_id,
-        display_name: s.display_name || undefined,
-        score: { overall: s.total, fairness, transparency },
-        flags: found?.flags || [],
-      };
-    });
-
-    return {
-      batch_id: mock.batch_id,
-      n_candidates: mock.n_candidates ?? candidates.length,
-      spearman_rho: mock.spearman_rho,
-      topk_overlap_count: mock.topk_overlap_count,
-      topk_overlap_ratio: mock.topk_overlap_ratio,
-      mean_abs_delta: mock.mean_abs_delta,
-      candidates,
-      flags_by_type: mock.flags_by_type,
-      flags_by_severity: mock.flags_by_severity,
-      _seed: mock._seed,
-    };
-  }
-
-  /* -------------------------- handlers -------------------------- */
+  /* ---------------- upload handler ---------------- */
   async function onPickPdfs(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []).filter((f) => f.type === "application/pdf");
     if (!files.length) return;
+
     setLoading(true);
     setError(null);
+
     try {
-      const extracted = await extractFromPdfs(files);
-      setUploads((prev) => [...prev, ...extracted]);
-      setCvs((prev) => {
-        const texts = extracted.map((x) => x.text?.trim() || "");
-        return [...prev.filter((t) => t.trim() !== ""), ...texts].slice(0, 5);
-      });
-    } catch (e: any) {
-      setError(e?.message || "PDF extraction failed.");
+      const extractedRaw = await extractFromPdfs(files);
+      const extracted = extractedRaw.map((x) => ({
+        id: x.id || `pdf_${Date.now()}_${Math.random()}`,
+        filename: (x.filename || "unknown.pdf") as string,
+        text: x.text || "",
+        size: x.size || 0,
+      }));
+      setUploads((prev) => [...prev, ...extracted].slice(0, 10));
+    } catch (err: any) {
+      setError(err?.message || "PDF extraction failed.");
     } finally {
       setLoading(false);
-      e.currentTarget.value = "";
+      if (e.currentTarget) e.currentTarget.value = "";
     }
+  }
+
+  /* ---------------- run scoring ---------------- */
+  function uniqKeepOrder(arr: string[]) {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of arr) {
+      const key = t.trim();
+      if (!key) continue;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(key);
+      }
+    }
+    return out;
   }
 
   async function handleRun() {
@@ -506,48 +394,42 @@ function DemoBox({
     setResult(null);
 
     try {
-      const { job_id } = await createJob();
+      // 1) Create a job in the backend with role_context
+      const { job_id } = await createJob(roleContext);
 
-      const textsFromPdfs = uploads.map((u) => u.text).filter(Boolean);
-      const pasted = cvs.filter((cv) => cv.trim());
-      const combined = [...textsFromPdfs, ...pasted].slice(0, 5);
+      // 2) Gather texts (PDF first, then pasted)
+      const pdfEntries = uploads.filter((u) => (u.text ?? "").trim());
+      const textsFromPdfs = pdfEntries.map((u) => u.text.trim());
+      const pasted = cvs.map((cv) => cv.trim()).filter(Boolean);
+
+      const combined = uniqKeepOrder([...textsFromPdfs, ...pasted]).slice(0, 5);
       if (!combined.length) throw new Error("Please upload PDF(s) or paste at least one CV.");
 
+      // 3) Build candidates payload with names
       const candidatesPayload = combined.map((cv_text, i) => {
-        const labelFromPdf = uploads[i]?.filename?.replace(/\.[Pp][Dd][Ff]$/, "");
-        return {
-          cv_text,
-          display_name: extractName(cv_text) || labelFromPdf || `Candidate ${i + 1}`,
-          artifacts: {},
-        };
+        const isPdf = i < pdfEntries.length;
+        const display_name = isPdf
+          ? (extractName(cv_text) || (pdfEntries[i].filename || "CV").replace(/\.[Pp][Dd][Ff]$/, ""))
+          : (extractName(cv_text) || `Candidate ${i - pdfEntries.length + 1}`);
+        return { cv_text, display_name, artifacts: {} };
       });
 
-      let data: any;
-      try {
-        const { candidate_ids } = await addCandidates(job_id, candidatesPayload);
-        data = await runScoring(job_id, candidate_ids);
-      } catch {
-        // mock fallback
-        const roleCtx = localStorage.getItem("jobContext") || "";
-        const cands = candidatesPayload.map((c, i) => ({
-          id: `cand_mock_${i}`,
-          cv_text: c.cv_text,
-          display_name: c.display_name || `Candidate ${i + 1}`,
-        }));
-        const seedInput = `${roleCtx}||${combined.join("||")}`;
-        data = mockScoring(cands, roleCtx, seedInput);
+      // 4) Send to backend
+      const { candidate_ids } = await addCandidates(job_id, candidatesPayload);
+      let data = await runScoring(job_id, candidate_ids);
+
+      // Ensure display_name is present for UX
+      if (Array.isArray(data?.scores)) {
+        data.scores = data.scores.map((s: any) => {
+          const local = candidatesPayload.find((c) => c.cv_text && s.candidate_id);
+          return { ...s, display_name: s.display_name ?? local?.display_name ?? s.candidate_id };
+        });
       }
 
+      // 5) Persist for evaluation page
+      localStorage.setItem("jobContext", roleContext);
       localStorage.setItem("demoBatch", JSON.stringify(data));
       localStorage.setItem("latestBatchId", data.batch_id);
-
-      // canonical for Evaluation fallback
-      try {
-        const canonical = toCanonicalReport(data);
-        localStorage.setItem(`report:${data.batch_id}`, JSON.stringify(canonical));
-      } catch (e) {
-        console.warn("Failed to persist canonical report", e);
-      }
 
       setResult(data);
     } catch (e: any) {
@@ -557,23 +439,46 @@ function DemoBox({
     }
   }
 
-  function updateCv(index: number, value: string) {
-    setCvs((prev) => {
-      const next = [...prev];
-      next[index] = value;
-      return next;
-    });
-  }
-  function addCvField() {
-    if (cvs.length < 5) setCvs((prev) => [...prev, ""]);
-  }
-  function removeCvField(index: number) {
-    setCvs((prev) => prev.filter((_, i) => i !== index));
-  }
-
-  /* ------------------------------ UI ------------------------------ */
+  /* ---------------- UI ---------------- */
   return (
     <div id="demo-box" className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+      {/* Role context */}
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm text-slate-700">
+            <div className="font-semibold">Role context</div>
+            <div className="text-xs text-slate-500">
+              Scoring will adapt to this description (e.g., Backend vs. Frontend, RAG, DevOps).
+            </div>
+          </div>
+          <div className="flex gap-2">
+            {presets.map((p) => (
+              <button
+                key={p.name}
+                type="button"
+                onClick={() => setRoleContext(p.text)}
+                className="text-xs rounded-lg px-3 py-1 ring-1 ring-slate-300 hover:bg-slate-50"
+                title={p.name}
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
+        </div>
+        <textarea
+          className="w-full h-24 rounded-xl border border-slate-300 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          value={roleContext}
+          onChange={(e) => setRoleContext(e.target.value)}
+          placeholder="Describe the role (stack, responsibilities, must-haves)…"
+        />
+        <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-slate-600">
+          <SpecTag name="System design" info="scalability • distributed • throughput/latency • caching/queues" />
+          <SpecTag name="Production ownership" info="on-call • incidents • SLOs • observability • postmortems" />
+          <SpecTag name="Language / Stack" info="Python/FastAPI • SQL/Postgres • Go • React/TS (if relevant)" />
+          <SpecTag name="Code quality" info="tests/pytest • CI/CD • OpenAPI/Pydantic • reviews/docs" />
+        </div>
+      </div>
+
       {/* Uploads */}
       <div className="flex items-center justify-between gap-3">
         <div className="text-sm text-slate-700">
@@ -607,11 +512,11 @@ function DemoBox({
               className="mt-2 w-full h-24 rounded-xl border border-slate-300 p-3 focus:outline-none focus:ring-2 focus:ring-emerald-500"
               placeholder={`CV ${i + 1} text... (optional if you uploaded PDFs)`}
               value={cv}
-              onChange={(e) => updateCv(i, e.target.value)}
+              onChange={(e) => setCvs((prev) => prev.map((v, idx) => (idx === i ? e.target.value : v)))}
             />
             {cvs.length > 1 && (
               <button
-                onClick={() => removeCvField(i)}
+                onClick={() => setCvs((prev) => prev.filter((_, idx) => idx !== i))}
                 className="absolute top-1 right-1 text-rose-600 text-sm font-bold hover:text-rose-800"
                 title="Remove this CV"
               >
@@ -621,7 +526,10 @@ function DemoBox({
           </div>
         ))}
         {cvs.length < 5 && (
-          <button onClick={addCvField} className="px-3 py-1 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 text-sm">
+          <button
+            onClick={() => setCvs((prev) => [...prev, ""])}
+            className="px-3 py-1 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 text-sm"
+          >
             + Add another CV
           </button>
         )}
@@ -629,7 +537,7 @@ function DemoBox({
 
       {/* Actions */}
       <div className="mt-4 flex items-center justify-between">
-        <span className="text-xs text-slate-500">Will create Job → add Candidate(s) → run Scoring</span>
+        <span className="text-xs text-slate-500">Will create Job (with role) → add Candidate(s) → run Scoring</span>
         <div className="flex items-center gap-3">
           <MiniViewerToggle value={viewerMode} onChange={setViewerMode} />
           <button
@@ -661,8 +569,9 @@ function DemoBox({
           </div>
 
           {result.scores?.map((s: any) => {
-            const flagsRow = (result.ethics_flags || []).find((f: any) => f.candidate_id === s.candidate_id);
-            const labels: string[] = flagsRow?.flags || [];
+            const firstEvidence =
+              (s.by_criterion || []).find((c: any) => (c.evidence_span || "").trim())?.evidence_span || "";
+
             return (
               <div key={s.candidate_id} className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
                 <div className="flex items-start justify-between">
@@ -671,56 +580,55 @@ function DemoBox({
                     <div className="mt-0.5 text-xs text-slate-500">{s.candidate_id}</div>
                   </div>
                   <div className="text-right">
-                    <div className="text-2xl font-semibold text-slate-900">{Math.min(s.total, 99).toFixed(1)}</div>
-                    <div className="text-xs text-slate-500">Total</div>
+                    <div className="text-2xl font-semibold text-slate-900">{Number(s.total).toFixed(1)}</div>
+                    <div className="text-xs text-slate-500">Total (0–5)</div>
                   </div>
                 </div>
 
-                {/* simple bars */}
-                <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {s.by_criterion?.map((c: any) => (
-                    <div key={c.criterion}>
-                      <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
-                        <span>{c.criterion}</span>
-                        <span className="font-medium text-slate-900">{c.score.toFixed(1)}</span>
+                {/* criteria bars 0..5 */}
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {s.by_criterion?.map((c: any) => {
+                    const pct = Math.min(100, Math.max(0, (Number(c.score) / 5) * 100));
+                    const label = CRITERION_LABEL[c.key] || c.key;
+                    return (
+                      <div key={c.key}>
+                        <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
+                          <span title={c.rationale || label}>{label}</span>
+                          <span className="font-medium text-slate-900">{Number(c.score).toFixed(1)}</span>
+                        </div>
+                        <div className="h-2 w-full rounded bg-slate-100">
+                          <div className="h-2 rounded bg-slate-900" style={{ width: `${pct}%` }} />
+                        </div>
                       </div>
-                      <div className="h-2 w-full rounded bg-slate-100">
-                        <div className="h-2 rounded bg-slate-900" style={{ width: `${Math.min(100, Math.max(0, c.score))}%` }} />
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
-                {/* tiny evidence-ish block to match prior copy */}
+                {/* evidence snippet */}
                 <div className="mt-3 text-xs text-slate-600">
-                  No brand influence detected.<br />
-                  <span className="text-slate-500">Next step:</span> Proceed with structured interview on rubric areas.
+                  {firstEvidence ? (
+                    <>
+                      <span className="text-slate-500">Evidence:</span> “{firstEvidence}”
+                    </>
+                  ) : (
+                    <>No specific evidence captured for this candidate.</>
+                  )}
                 </div>
-
-                {/* flags */}
-                {labels.length > 0 && (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {labels.map((fl, i) => (
-                      <span
-                        key={i}
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ring-1 ${
-                          /large|major/i.test(fl)
-                            ? "bg-rose-50 text-rose-700 ring-rose-200"
-                            : /instability|proxy|moderate/i.test(fl)
-                            ? "bg-amber-50 text-amber-700 ring-amber-200"
-                            : "bg-slate-100 text-slate-700 ring-slate-200"
-                        }`}
-                      >
-                        {fl}
-                      </span>
-                    ))}
-                  </div>
-                )}
               </div>
             );
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------------- Helpers ---------------- */
+function SpecTag({ name, info }: { name: string; info: string }) {
+  return (
+    <div className="rounded-lg bg-white ring-1 ring-slate-200 px-2.5 py-1.5">
+      <div className="font-medium text-slate-800">{name}</div>
+      <div className="text-[11px] text-slate-500 mt-0.5">{info}</div>
     </div>
   );
 }
