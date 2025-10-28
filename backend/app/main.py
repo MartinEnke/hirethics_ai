@@ -4,10 +4,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Iterable
 import csv
 import re
 import uuid
+from math import exp
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
@@ -129,6 +130,7 @@ class ScoreRunOut(BaseModel):
     batch_id: str
     scores: List[CandidateScore]
     ethics_flags: List[EthicsFlag]
+    audit: Optional[dict] = None  # NEW: per-run audit payload for frontend UX
 
 
 class CandidateReport(BaseModel):
@@ -168,14 +170,14 @@ def ping():
 
 
 # ------------------------------------------------------------------------------
-# Blinding helper (kept for future ethics checks)
+# Blinding helper
 # ------------------------------------------------------------------------------
 PRESTIGE_TOKENS_STRICT = [r"\bMIT\b", r"\bStanford\b", r"\bHarvard\b", r"\bOxford\b", r"\bCambridge\b"]
 INSTITUTION_GENERIC = r"\b[A-Z][a-zA-Z]+ (University|College|Institute)\b"
 
 
 def blind_text(t: str) -> str:
-    # naive PII/proxy blinding for future ethics probes
+    # naive PII/proxy blinding for ethics probes
     t = re.sub(r"\b[A-Z][a-z]+ [A-Z][a-z]+\b", "<NAME>", t)  # naive full name
     t = re.sub(r"\S+@\S+", "<EMAIL>", t)  # emails
     t = re.sub(r"\+?\d[\d\-\s()]{7,}\d", "<PHONE>", t)  # phones
@@ -185,20 +187,62 @@ def blind_text(t: str) -> str:
     return t
 
 
+# --- Risky proxies (for visibility only; doesn't affect score) -----------------
+RISKY_PROXIES = [
+    r"\b(?:MIT|Stanford|Harvard|Oxford|Cambridge)\b",
+    r"\b[A-Z][a-zA-Z]+ (University|College|Institute)\b",
+    r"\S+@\S+",
+    r"\+?\d[\d\-\s()]{7,}\d",
+    r"\b(?:Berlin|Munich|Hamburg|Cologne|Frankfurt|Germany|EU)\b",
+]
+
+
+def find_risky_proxies(text: str) -> List[str]:
+    hits: List[str] = []
+    t = text or ""
+    for pat in RISKY_PROXIES:
+        if re.search(pat, t, flags=re.IGNORECASE):
+            # Keep a readable hint of the pattern (no raw \b etc.)
+            cleaned = pat.replace(r"\b", "")
+            hits.append(cleaned)
+    # de-dupe preserving order
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for h in hits:
+        if h not in seen:
+            ordered.append(h)
+            seen.add(h)
+    return ordered[:5]  # cap to 5 for UX
+
+
 # ------------------------------------------------------------------------------
-# Role-aware keyword building
+# Role-aware keyword building (regex-based with readable labels)
 # ------------------------------------------------------------------------------
-def _has_any(text: str, needles: List[str]) -> bool:
+Needle = Tuple[re.Pattern, str]  # (compiled_pattern, display_label)
+
+
+def _has_any(text: str, needles: Iterable[str]) -> bool:
     t = (text or "").lower()
     return any(n in t for n in needles)
 
 
-def _compile(pats: List[str]) -> List[str]:
-    # Keep lowercase substrings for PDF OCR robustness
-    return [p.lower() for p in pats]
+def _compile(pats: List[str]) -> List[Needle]:
+    """
+    Compile tokens into case-insensitive regex with 'word-ish' boundaries,
+    but keep the original human-readable label for evidence display.
+    """
+    out: List[Needle] = []
+    for raw in pats:
+        token = raw.strip()
+        if not token:
+            continue
+        escaped = re.escape(token)
+        pat = re.compile(rf"(?<![\w.+-]){escaped}(?![\w.+-])", re.IGNORECASE)
+        out.append((pat, token))
+    return out
 
 
-def build_job_keywords(role_context: str) -> Dict[str, List[str]]:
+def build_job_keywords(role_context: str) -> Dict[str, List[Needle]]:
     rc = (role_context or "").lower()
 
     # Base (present for most engineering roles)
@@ -224,7 +268,7 @@ def build_job_keywords(role_context: str) -> Dict[str, List[str]]:
 
     # Discipline bundles
     FE_stack = _compile([
-        "react", "typescript", "ts ", " next.js", "nextjs", "vite", "redux",
+        "react", "typescript", "ts", "next.js", "nextjs", "vite", "redux",
         "storybook", "tailwind", "css modules", "sass", "aria", "accessibility",
         "webpack", "pnpm", "yarn", "npm",
     ])
@@ -284,22 +328,161 @@ def build_job_keywords(role_context: str) -> Dict[str, List[str]]:
         lang_stack += RAG_stack
         code_quality += RAG_quality
 
-    # De-duplicate while preserving order
-    def dedupe(xs: List[str]) -> List[str]:
+    # De-duplicate while preserving order (by label)
+    def dedupe_needles(xs: List[Needle]) -> List[Needle]:
         seen: set[str] = set()
-        out: List[str] = []
-        for x in xs:
-            if x not in seen:
-                out.append(x)
-                seen.add(x)
+        out: List[Needle] = []
+        for pat, label in xs:
+            if label not in seen:
+                out.append((pat, label))
+                seen.add(label)
         return out
 
     return {
-        "sys_design": dedupe(sys_design),
-        "prod_ownership": dedupe(prod_ownership),
-        "lang_stack": dedupe(lang_stack),
-        "code_quality": dedupe(code_quality),
+        "sys_design": dedupe_needles(sys_design),
+        "prod_ownership": dedupe_needles(prod_ownership),
+        "lang_stack": dedupe_needles(lang_stack),
+        "code_quality": dedupe_needles(code_quality),
     }
+
+
+# --- Role flags, role-aware default weights, and co-occurrence pairs ----------
+def _role_flags(role_context: str) -> Dict[str, bool]:
+    s = (role_context or "").lower()
+    return {
+        "frontend": any(x in s for x in ["frontend", "front-end", "react", "typescript", "next.js", "ui"]),
+        "backend": any(x in s for x in ["backend", "back-end", "api", "fastapi", "flask", "django", "golang", "go"]),
+        "data": any(x in s for x in ["data engineer", "etl", "warehouse", "spark", "airflow", "dbt", "kafka", "snowflake", "bigquery"]),
+        "devops": any(x in s for x in ["devops", "platform", "sre", "kubernetes", "docker", "terraform", "argo", "argocd"]),
+        "rag": any(x in s for x in ["rag", "llm", "langchain", "llamaindex", "pgvector", "retrieval"]),
+    }
+
+
+def infer_role_weights(role_context: str) -> Dict[str, float]:
+    """Default bucket weights if no rubric was supplied, tuned per role."""
+    f = _role_flags(role_context)
+    if f["frontend"]:
+        return {"sys_design": 0.20, "prod_ownership": 0.15, "lang_stack": 0.35, "code_quality": 0.30}
+    if f["data"]:
+        return {"sys_design": 0.20, "prod_ownership": 0.20, "lang_stack": 0.40, "code_quality": 0.20}
+    if f["devops"]:
+        return {"sys_design": 0.20, "prod_ownership": 0.35, "lang_stack": 0.30, "code_quality": 0.15}
+    # backend / mixed default
+    return {"sys_design": 0.35, "prod_ownership": 0.20, "lang_stack": 0.25, "code_quality": 0.20}
+
+
+def build_cooccurrence_pairs(role_context: str) -> Dict[str, List[Tuple[str, str]]]:
+    """
+    Pairs of tokens that, if co-occur close together, should gently bump a bucket score.
+    Case-insensitive substring match is fine; keep lowercase here.
+    """
+    f = _role_flags(role_context)
+    pairs: Dict[str, List[Tuple[str, str]]] = {
+        "sys_design": [],
+        "prod_ownership": [("on-call", "incident"), ("slo", "observability"), ("grafana", "prometheus")],
+        "lang_stack": [],
+        "code_quality": [("jest", "testing-library"), ("pytest", "unit test"), ("openapi", "pydantic")],
+    }
+    if f["frontend"]:
+        pairs["lang_stack"] += [("react", "typescript"), ("react", "next.js"), ("typescript", "next.js")]
+        pairs["code_quality"] += [("lighthouse", "accessibility"), ("playwright", "testing-library")]
+    if f["backend"]:
+        pairs["lang_stack"] += [("python", "fastapi"), ("flask", "sqlalchemy"), ("openapi", "pydantic")]
+        pairs["sys_design"] += [("microservice", "distributed")]
+    if f["data"]:
+        pairs["lang_stack"] += [("spark", "airflow"), ("airflow", "dbt"), ("snowflake", "dbt"), ("bigquery", "dbt")]
+        pairs["code_quality"] += [("data quality", "lineage"), ("great expectations", "tests")]
+    if f["devops"]:
+        pairs["lang_stack"] += [("kubernetes", "terraform"), ("k8s", "terraform"), ("argocd", "gitops")]
+        pairs["prod_ownership"] += [("slo", "error budget")]
+    if f["rag"]:
+        pairs["lang_stack"] += [("rag", "retrieval"), ("pgvector", "langchain"), ("llamaindex", "embedding")]
+        pairs["code_quality"] += [("evaluation", "guardrail")]
+    return pairs
+
+
+# ------------------------------------------------------------------------------
+# Scoring helpers (continuous, unique-token, co-occurrence bump, better evidence)
+# ------------------------------------------------------------------------------
+def _unique_labels(text: str, needles: List[Needle]) -> List[str]:
+    """Return unique matched labels for given compiled patterns."""
+    if not text:
+        return []
+    hits: List[str] = []
+    seen: set[str] = set()
+    for pat, label in needles:
+        if pat.search(text):
+            if label not in seen:
+                hits.append(label)
+                seen.add(label)
+    return hits
+
+
+def _saturating_score(k: int, k_ref: int = 4, max_score: float = 5.0) -> float:
+    """
+    Smooth 0..5 score with diminishing returns.
+    ~k_ref unique hits reach ~80–90% of max_score.
+    """
+    if k <= 0:
+        return 0.0
+    a = 1.2  # steepness
+    s = max_score * (1 - exp(-a * (k / max(k_ref, 1))))
+    return round(min(max_score, s), 2)
+
+
+def _cooccurrence_bump(text: str, pairs: Optional[List[Tuple[str, str]]]) -> float:
+    """
+    Gentle +0.3 bump if any pair appears within ~64 chars proximity (case-insensitive).
+    """
+    if not text or not pairs:
+        return 0.0
+    t = (text or "").lower()
+    for a, b in pairs:
+        ia = t.find(a)
+        if ia == -1:
+            continue
+        ib = t.find(b)
+        if ib == -1:
+            continue
+        if abs(ia - ib) <= 64:
+            return 0.3
+    return 0.0
+
+
+def score_bucket(text: str, needles: List[Needle], pairs: Optional[List[Tuple[str, str]]] = None) -> Tuple[float, List[str]]:
+    """
+    - Counts unique regex-token hits -> continuous score (0..5) via a saturating curve.
+    - Applies a gentle +0.3 co-occurrence bump (capped at 5.0) when certain pairs appear nearby.
+    - Returns up to 3 evidence tokens, preferring longer multiword tokens first.
+    """
+    labels = _unique_labels(text, needles)
+    k = len(labels)
+    score = _saturating_score(k, k_ref=4, max_score=5.0)
+    score = min(5.0, round(score + _cooccurrence_bump(text, pairs), 2))
+    evid = sorted(labels, key=lambda s: (-len(s), s))[:3]
+    return score, evid
+
+
+# ------------------------------------------------------------------------------
+# Ranking helpers for ethics probes
+# ------------------------------------------------------------------------------
+def _rank_order(pairs: List[Tuple[str, float]]) -> Dict[str, int]:
+    """
+    Turn [(candidate_id, total), ...] into rank positions (1 = best).
+    Stable: ties keep relative order.
+    """
+    sorted_pairs = sorted(pairs, key=lambda x: (-x[1], x[0]))
+    return {cid: i + 1 for i, (cid, _) in enumerate(sorted_pairs)}
+
+
+def _spearman_rho(ranks1: Dict[str, int], ranks2: Dict[str, int]) -> Optional[float]:
+    """Spearman correlation between two candidate rank dicts."""
+    common = [cid for cid in ranks1.keys() if cid in ranks2]
+    n = len(common)
+    if n < 2:
+        return None
+    d2 = sum((ranks1[cid] - ranks2[cid]) ** 2 for cid in common)
+    return 1 - (6 * d2) / (n * (n**2 - 1))
 
 
 # ------------------------------------------------------------------------------
@@ -326,102 +509,155 @@ def add_candidates(payload: CandidateBatchIn):
 
 @app.post(f"{API_PREFIX}/score/run", response_model=ScoreRunOut)
 def run_scores(payload: ScoreRunIn):
-    # Resolve job & weights (fallback to defaults)
+    # Resolve job & weights (fallback to role-aware defaults)
     job = _JOBS.get(payload.job_id) or {}
     rubric = job.get("rubric", [])
-    weights = {r["key"]: float(r["weight"]) for r in rubric} or {
-        "sys_design": 0.35,
-        "prod_ownership": 0.20,
-        "lang_stack": 0.25,
-        "code_quality": 0.20,
-    }
+    role_context: str = job.get("role_context", "") or ""
 
-    # Build job-specific keywords from role_context
-    role_context = job.get("role_context", "") or ""
+    # Role-aware defaults if rubric is empty
+    weights = {r["key"]: float(r["weight"]) for r in rubric} or infer_role_weights(role_context)
+
+    # Build job-specific keywords and co-occurrence pairs from role_context
     KW = build_job_keywords(role_context)
+    PAIRS = build_cooccurrence_pairs(role_context)
 
     batch_id = f"batch_{uuid.uuid4().hex[:8]}"
-    scores: List[CandidateScore] = []
+    scores_before: List[CandidateScore] = []
     flags: List[EthicsFlag] = []
     batch_records: List[Dict[str, Any]] = []
 
-    def score_bucket(text: str, needles: List[str]) -> Tuple[float, List[str]]:
-        t = (text or "").lower()
-        hits = [n for n in needles if n in t]
-        k = len(hits)
-        # map #hits → 0..5
-        if k == 0:
-            score = 0.0
-        elif k == 1:
-            score = 2.5
-        elif k == 2:
-            score = 3.5
-        elif k == 3:
-            score = 4.2
-        else:
-            score = 4.7
-        return round(score, 2), hits[:2]  # show up to 2 matched tokens as evidence
+    # light role-alignment nudge
+    role_is_frontend = _has_any(role_context.lower(), ["frontend", "front-end", "react", "typescript", "next.js", "ui"])
+    role_is_backend = _has_any(role_context.lower(), ["backend", "back-end", "api", "fastapi", "flask", "django", "golang", "go"])
 
-    for cid in payload.candidate_ids:
-        cand = (_CANDIDATES.get(cid) or {})
-        raw_text = (cand.get("cv_text") or "").strip()
-        # Keep blinding ready for future ethics probes, not used for scoring yet
-        _ = blind_text(raw_text)
-
-        # Per-bucket scoring
+    def score_text(cv_text: str) -> Tuple[List[CriterionScore], float]:
         by: List[CriterionScore] = []
         for key in ["sys_design", "prod_ownership", "lang_stack", "code_quality"]:
             if key not in weights:
                 continue
-            sc, hits = score_bucket(raw_text, KW.get(key, []))
-            by.append(CriterionScore(
-                key=key,
-                score=sc,
-                evidence_span=", ".join(hits),
-                rationale=""
+            sc, hits = score_bucket(cv_text, KW.get(key, []), PAIRS.get(key, []))
+            by.append(CriterionScore(key=key, score=sc, evidence_span=", ".join(hits), rationale=""))
+
+        # Gentle role-alignment nudge on lang_stack (doesn't overpower evidence)
+        lang_row = next((c for c in by if c.key == "lang_stack"), None)
+        if lang_row:
+            ev = (lang_row.evidence_span or "").lower()
+            fe_signals = any(tok in ev for tok in ["react", "typescript", "next.js", "storybook", "accessibility"])
+            be_signals = any(tok in ev for tok in ["python", "fastapi", "flask", "django", "golang", "go"])
+            delta = 0.0
+            if role_is_frontend and be_signals and not fe_signals:
+                delta = -0.2
+            elif role_is_backend and fe_signals and not be_signals:
+                delta = -0.2
+            if delta:
+                lang_row.score = round(min(5.0, max(0.0, lang_row.score + delta)), 2)
+
+        wsum = sum(weights.get(c.key, 0.0) for c in by) or 1.0
+        total = round(sum(weights.get(c.key, 0.0) * c.score for c in by) / wsum, 2)
+        return by, total
+
+    # 1) Baseline scoring
+    baseline_pairs: List[Tuple[str, float]] = []
+    for cid in payload.candidate_ids:
+        cand = (_CANDIDATES.get(cid) or {})
+        raw_text = ((cand.get("cv_text") or "")).strip()
+
+        by, total = score_text(raw_text)
+        scores_before.append(CandidateScore(candidate_id=cid, total=total, by_criterion=by, display_name=cand.get("display_name")))
+        baseline_pairs.append((cid, total))
+
+    ranks_before = _rank_order(baseline_pairs)
+
+    # 2) Blinded rescoring (PII + prestige proxies removed)
+    blinded_pairs: List[Tuple[str, float]] = []
+    totals_after: Dict[str, float] = {}
+    for cid in payload.candidate_ids:
+        cand = (_CANDIDATES.get(cid) or {})
+        raw_text = ((cand.get("cv_text") or "")).strip()
+        blinded = blind_text(raw_text)
+        _by_blind, total_after = score_text(blinded)
+        totals_after[cid] = total_after
+        blinded_pairs.append((cid, total_after))
+
+    ranks_after = _rank_order(blinded_pairs)
+
+    # 2b) Proxy matches before/after blinding (for visibility in frontend)
+    proxies_before: Dict[str, List[str]] = {}
+    proxies_after: Dict[str, List[str]] = {}
+    for cid in payload.candidate_ids:
+        cand = (_CANDIDATES.get(cid) or {})
+        raw_text = (cand.get("cv_text") or "")
+        blinded = blind_text(raw_text)
+        proxies_before[cid] = find_risky_proxies(raw_text)
+        proxies_after[cid] = find_risky_proxies(blinded)
+
+    # 3) Ethics flags: rank deltas & per-candidate deltas (+ proxies removed)
+    for s in scores_before:
+        before = ranks_before.get(s.candidate_id, 0)
+        after = ranks_after.get(s.candidate_id, 0)
+        delta_pos = before - after  # + means improved after blinding
+        if abs(delta_pos) >= 2:
+            flags.append(EthicsFlag(
+                candidate_id=s.candidate_id,
+                type="BLINDING_DELTA",
+                severity="warning" if abs(delta_pos) < 4 else "error",
+                message=f"Rank changed by {delta_pos:+d} positions under blinding.",
+                details={"delta_positions": delta_pos, "rank_before": before, "rank_after": after}
             ))
 
-        # Weighted total
-        total = 0.0
-        if by:
-            wsum = sum(weights.get(c.key, 0.0) for c in by) or 1.0
-            total = round(sum(weights.get(c.key, 0.0) * c.score for c in by) / wsum, 2)
-
-        scores.append(CandidateScore(
-            candidate_id=cid,
-            total=total,
-            by_criterion=by,
-            display_name=cand.get("display_name")
-        ))
-
-        # Example ethics flag when score is high (placeholder)
-        if total >= 4.2:
+        removed = [p for p in (proxies_before.get(s.candidate_id, []) or []) if p not in (proxies_after.get(s.candidate_id, []) or [])]
+        if removed:
             flags.append(EthicsFlag(
-                candidate_id=cid,
-                type="BLINDING_DELTA",
-                severity="warning",
-                message="Rank changed under blinding by +2 positions.",
-                details={"delta": 2}
+                candidate_id=s.candidate_id,
+                type="PROXY_SIGNAL_REMOVED",
+                severity="info",
+                message=f"Proxy signal(s) removed by blinding: {', '.join(removed[:3])}",
+                details={"removed_proxies": removed}
             ))
 
         batch_records.append({
-            "candidate_id": cid,
-            "total_before": total,
-            "total_after": total,  # no counterfactual applied yet
-            "delta": 0.0,
-            "flags": [f.type for f in flags if f.candidate_id == cid],
+            "candidate_id": s.candidate_id,
+            "total_before": float(s.total),
+            "total_after": float(totals_after.get(s.candidate_id, s.total)),
+            "delta": float(totals_after.get(s.candidate_id, s.total) - s.total),
+            "flags": [f.type for f in flags if f.candidate_id == s.candidate_id],
         })
 
-    # Persist batch for /report
+    # 4) Persist batch-level audit stats
+    rho = _spearman_rho(ranks_before, ranks_after)
+
+    audit_payload = {
+        "spearman_rho": rho,
+        "ranks_before": ranks_before,
+        "ranks_after": ranks_after,
+        "per_candidate": {
+            cid: {
+                "total_before": float(next((s.total for s in scores_before if s.candidate_id == cid), 0.0)),
+                "total_after": float(totals_after.get(cid, 0.0)),
+                "delta": float(totals_after.get(cid, 0.0) - next((s.total for s in scores_before if s.candidate_id == cid), 0.0)),
+                "rank_before": int(ranks_before.get(cid, 0)),
+                "rank_after": int(ranks_after.get(cid, 0)),
+                "proxies_before": proxies_before.get(cid, []),
+                "proxies_after": proxies_after.get(cid, []),
+                "proxies_removed": [p for p in (proxies_before.get(cid, []) or []) if p not in (proxies_after.get(cid, []) or [])],
+            }
+            for cid, _ in baseline_pairs
+        }
+    }
+
     _BATCHES[batch_id] = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "job_id": payload.job_id,
         "candidates": batch_records,
         "flags": [f.model_dump() for f in flags],
         "role_context": role_context,
+        "ranks_before": ranks_before,
+        "ranks_after": ranks_after,
+        "spearman_rho": rho,
+        "audit": audit_payload,
     }
 
-    return ScoreRunOut(batch_id=batch_id, scores=scores, ethics_flags=flags)
+    return ScoreRunOut(batch_id=batch_id, scores=scores_before, ethics_flags=flags, audit=audit_payload)
 
 
 # ------------------------------------------------------------------------------
@@ -449,14 +685,26 @@ def get_report(batch_id: str, k: int = Query(None, ge=1)):
         flags_by_type[t] = flags_by_type.get(t, 0) + 1
         flags_by_severity[s] = flags_by_severity.get(s, 0) + 1
 
+    rho = batch.get("spearman_rho")
+    ranks_before = batch.get("ranks_before") or {}
+    ranks_after = batch.get("ranks_after") or {}
+
+    # Top-K overlap (by rank)
+    def topk(ids_by_rank: Dict[str, int], k_: int) -> set:
+        return {cid for cid, r in ids_by_rank.items() if r <= k_}
+    top_before = topk(ranks_before, k) if ranks_before else set()
+    top_after = topk(ranks_after, k) if ranks_after else set()
+    overlap_count = len(top_before & top_after) if top_before and top_after else min(k, n)
+    overlap_ratio = (overlap_count / float(k)) if k else 0.0
+
     return ReportOut(
         batch_id=batch_id,
         job_id=batch.get("job_id", ""),
         n_candidates=n,
         k=k,
-        spearman_rho=None,  # compute if you add counterfactual rankings later
-        topk_overlap_count=min(k, n),
-        topk_overlap_ratio=(min(k, n) / (k or 1)) if k else 0.0,
+        spearman_rho=rho,
+        topk_overlap_count=overlap_count,
+        topk_overlap_ratio=overlap_ratio,
         mean_delta=mean_delta,
         mean_abs_delta=mean_abs_delta,
         flags_by_type=flags_by_type,

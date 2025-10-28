@@ -263,7 +263,7 @@ function Dot() {
   return <span className="h-2.5 w-2.5 rounded-full bg-slate-300 inline-block" />;
 }
 
-/* ---------------- DemoBox (role-aware, PDF upload + text) ---------------- */
+/* ---------------- DemoBox (role-aware, PDF upload + text + bias audit) ---------------- */
 function DemoBox({
   viewerMode,
   setViewerMode,
@@ -291,6 +291,13 @@ function DemoBox({
     prod_ownership: "Production ownership",
     lang_stack: "Language / Stack",
     code_quality: "Code quality",
+  };
+
+  const CRITERION_INFO: Record<string, string> = {
+    sys_design: "scalability • distributed • throughput/latency • caching/queues",
+    prod_ownership: "on-call • incidents • SLOs • observability • postmortems",
+    lang_stack: "Python/FastAPI • SQL/Postgres • Go • React/TS (if relevant)",
+    code_quality: "tests/pytest • CI/CD • OpenAPI/Pydantic • reviews/docs",
   };
 
   /* Quick presets update roleContext */
@@ -342,11 +349,29 @@ function DemoBox({
     );
   }
 
-  /* ---------------- name helper ---------------- */
+  /* ---------------- helpers ---------------- */
   function extractName(cv: string) {
     const cand = (cv.split("\n").map((s) => s.trim()).find(Boolean) || "").replace(/^[-–•*#\s]+/, "");
     return cand && cand.length <= 80 ? cand : null;
   }
+
+  function uniqKeepOrder(arr: string[]) {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of arr) {
+      const key = t.trim();
+      if (!key) continue;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(key);
+      }
+    }
+    return out;
+  }
+
+  const audit = (result?.audit || {}) as any;
+  const perCandidate: Record<string, any> = audit?.per_candidate || {};
+  const rho: number | null = typeof audit?.spearman_rho === "number" ? audit.spearman_rho : null;
 
   /* ---------------- upload handler ---------------- */
   async function onPickPdfs(e: React.ChangeEvent<HTMLInputElement>) {
@@ -374,20 +399,6 @@ function DemoBox({
   }
 
   /* ---------------- run scoring ---------------- */
-  function uniqKeepOrder(arr: string[]) {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const t of arr) {
-      const key = t.trim();
-      if (!key) continue;
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push(key);
-      }
-    }
-    return out;
-  }
-
   async function handleRun() {
     setLoading(true);
     setError(null);
@@ -420,13 +431,15 @@ function DemoBox({
 
       // Ensure display_name is present for UX
       if (Array.isArray(data?.scores)) {
-        data.scores = data.scores.map((s: any) => {
-          const local = candidatesPayload.find((c) => c.cv_text && s.candidate_id);
-          return { ...s, display_name: s.display_name ?? local?.display_name ?? s.candidate_id };
-        });
+        const idToName = new Map<string, string>();
+        candidate_ids.forEach((id, idx) => idToName.set(id, candidatesPayload[idx]?.display_name || id));
+        data.scores = data.scores.map((s: any) => ({
+          ...s,
+          display_name: s.display_name ?? idToName.get(s.candidate_id) ?? s.candidate_id,
+        }));
       }
 
-      // 5) Persist for evaluation page
+      // Persist for evaluation page & re-open
       localStorage.setItem("jobContext", roleContext);
       localStorage.setItem("demoBatch", JSON.stringify(data));
       localStorage.setItem("latestBatchId", data.batch_id);
@@ -560,40 +573,117 @@ function DemoBox({
       {/* Results */}
       {result && (
         <div className="mt-6 grid gap-4">
-          <div className="rounded-xl bg-emerald-50 p-4 ring-1 ring-emerald-200 flex items-center justify-between">
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Batch</div>
-              <div className="mt-1 text-sm text-emerald-900">{result.batch_id}</div>
+          {/* Batch header with audit summary */}
+          <div className="rounded-xl bg-emerald-50 p-4 ring-1 ring-emerald-200">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Batch</div>
+                <div className="mt-1 text-sm text-emerald-900 truncate">{result.batch_id}</div>
+                {typeof rho === "number" && (
+                  <div className="mt-1 text-xs text-emerald-900">
+                    Spearman ρ (baseline vs. blinded):{" "}
+                    <span className={`font-semibold ${rho < 0.8 ? "text-amber-700" : "text-emerald-700"}`}>
+                      {rho.toFixed(3)}
+                    </span>
+                  </div>
+                )}
+              </div>
+              <MiniViewerToggle value={viewerMode} onChange={setViewerMode} />
             </div>
-            <MiniViewerToggle value={viewerMode} onChange={setViewerMode} />
+
+            {/* Role context summary under Batch */}
+            <div className="mt-3">
+              <RoleContextSummary />
+            </div>
+
+            {/* Dev shortcuts */}
+            {viewerMode === "dev" && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <a
+                  className="text-xs px-3 py-1 rounded-lg bg-white ring-1 ring-slate-300 hover:bg-slate-50"
+                  href={`http://localhost:8000/api/v1/audit/${encodeURIComponent(result.batch_id)}.json`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open audit.json
+                </a>
+                <a
+                  className="text-xs px-3 py-1 rounded-lg bg-white ring-1 ring-slate-300 hover:bg-slate-50"
+                  href={`http://localhost:8000/api/v1/audit/${encodeURIComponent(result.batch_id)}.csv`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Download audit.csv
+                </a>
+              </div>
+            )}
           </div>
 
+          {/* Candidate cards */}
           {result.scores?.map((s: any) => {
-            const firstEvidence =
-              (s.by_criterion || []).find((c: any) => (c.evidence_span || "").trim())?.evidence_span || "";
+            // Collect up to 3 unique evidence tokens across all criteria
+            const evidenceTokens: string[] = Array.from(
+              new Set(
+                (s.by_criterion || [])
+                  .flatMap((c: any) =>
+                    String(c.evidence_span || "")
+                      .split(",")
+                      .map((t) => t.trim())
+                      .filter(Boolean)
+                  )
+              )
+            ).slice(0, 3);
+
+            // Audit details (if available)
+            const auditRow = perCandidate?.[s.candidate_id] || null;
+            const totalAfter = typeof auditRow?.total_after === "number" ? auditRow.total_after : null;
+            const rankBefore = auditRow?.rank_before ?? null;
+            const rankAfter = auditRow?.rank_after ?? null;
+            const delta = typeof auditRow?.delta === "number" ? auditRow.delta : (totalAfter != null ? totalAfter - Number(s.total || 0) : null);
+            const proxiesRemoved: string[] = auditRow?.proxies_removed || [];
+            const proxiesBefore: string[] = auditRow?.proxies_before || [];
+            const proxiesAfter: string[] = auditRow?.proxies_after || [];
 
             return (
               <div key={s.candidate_id} className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
                 <div className="flex items-start justify-between">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">{s.display_name || s.candidate_id}</div>
-                    <div className="mt-0.5 text-xs text-slate-500">{s.candidate_id}</div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-slate-900 truncate">
+                      {s.display_name || s.candidate_id}
+                    </div>
+                    <div className="mt-0.5 text-xs text-slate-500 break-all">{s.candidate_id}</div>
                   </div>
                   <div className="text-right">
                     <div className="text-2xl font-semibold text-slate-900">{Number(s.total).toFixed(1)}</div>
                     <div className="text-xs text-slate-500">Total (0–5)</div>
+                    {viewerMode !== "recruiter" && totalAfter != null && (
+                      <div className="mt-1 text-xs text-slate-600">
+                        <span className="mr-1">Blinded:</span>
+                        <span className="font-semibold">{totalAfter.toFixed(1)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* criteria bars 0..5 */}
+                {/* criteria bars */}
                 <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   {s.by_criterion?.map((c: any) => {
                     const pct = Math.min(100, Math.max(0, (Number(c.score) / 5) * 100));
                     const label = CRITERION_LABEL[c.key] || c.key;
+                    const hint = CRITERION_INFO[c.key] || "";
                     return (
                       <div key={c.key}>
                         <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
-                          <span title={c.rationale || label}>{label}</span>
+                          <span className="inline-flex items-center gap-1">
+                            {label}
+                            <span
+                              className="inline-flex h-4 w-4 items-center justify-center rounded-full ring-1 ring-slate-300 text-[9px] text-slate-600 cursor-help"
+                              title={hint}
+                              aria-label={`${label} info`}
+                            >
+                              i
+                            </span>
+                          </span>
                           <span className="font-medium text-slate-900">{Number(c.score).toFixed(1)}</span>
                         </div>
                         <div className="h-2 w-full rounded bg-slate-100">
@@ -604,16 +694,116 @@ function DemoBox({
                   })}
                 </div>
 
-                {/* evidence snippet */}
-                <div className="mt-3 text-xs text-slate-600">
-                  {firstEvidence ? (
-                    <>
-                      <span className="text-slate-500">Evidence:</span> “{firstEvidence}”
-                    </>
-                  ) : (
-                    <>No specific evidence captured for this candidate.</>
-                  )}
-                </div>
+                {/* recruiter view: evidence */}
+                {viewerMode === "recruiter" && (
+                  <div className="mt-3 text-xs text-slate-600">
+                    {evidenceTokens.length > 0 ? (
+                      <>
+                        <span className="text-slate-500">Evidence:</span> {evidenceTokens.join(", ")}
+                      </>
+                    ) : (
+                      <>No specific evidence captured for this candidate.</>
+                    )}
+                  </div>
+                )}
+
+                {/* ethics view: bias + proxies */}
+                {viewerMode === "ethics" && (
+                  <div className="mt-3 rounded-lg bg-amber-50 p-3 ring-1 ring-amber-200">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">Bias probe</div>
+                      <div className="text-xs text-amber-900">
+                        {rankBefore && rankAfter ? (
+                          <>
+                            Rank: <span className="font-semibold">#{rankBefore}</span> →{" "}
+                            <span className="font-semibold">#{rankAfter}</span>{" "}
+                            <span
+                              className={`ml-1 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] ring-1 ${
+                                rankBefore - rankAfter >= 2
+                                  ? "bg-amber-100 text-amber-900 ring-amber-200"
+                                  : "bg-amber-50 text-amber-800 ring-amber-200"
+                              }`}
+                              title="Positive delta means improved after blinding"
+                            >
+                              Δ {rankBefore - rankAfter > 0 ? `+${rankBefore - rankAfter}` : rankBefore - rankAfter}
+                            </span>
+                          </>
+                        ) : (
+                          <>Rank delta not available</>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                      <div className="rounded-md bg-white p-2 ring-1 ring-slate-200">
+                        <div className="text-[11px] text-slate-500">Total (baseline)</div>
+                        <div className="text-sm font-semibold text-slate-900">{Number(s.total).toFixed(2)}</div>
+                      </div>
+                      <div className="rounded-md bg-white p-2 ring-1 ring-slate-200">
+                        <div className="text-[11px] text-slate-500">Total (blinded)</div>
+                        <div className="text-sm font-semibold text-slate-900">{totalAfter != null ? totalAfter.toFixed(2) : "—"}</div>
+                      </div>
+                      <div className="rounded-md bg-white p-2 ring-1 ring-slate-200">
+                        <div className="text-[11px] text-slate-500">Δ total</div>
+                        <div className={`text-sm font-semibold ${delta ? (delta > 0 ? "text-emerald-700" : "text-rose-700") : "text-slate-900"}`}>
+                          {typeof delta === "number" ? (delta >= 0 ? `+${delta.toFixed(2)}` : delta.toFixed(2)) : "—"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <div className="rounded-md bg-white p-2 ring-1 ring-slate-200">
+                        <div className="text-[11px] text-slate-500 mb-1">Proxy signals (detected)</div>
+                        {proxiesBefore?.length ? (
+                          <ProxyList items={proxiesBefore} />
+                        ) : (
+                          <div className="text-[11px] text-slate-500">None detected</div>
+                        )}
+                      </div>
+                      <div className="rounded-md bg-white p-2 ring-1 ring-slate-200">
+                        <div className="text-[11px] text-slate-500 mb-1">After blinding</div>
+                        {proxiesAfter?.length ? (
+                          <ProxyList items={proxiesAfter} />
+                        ) : (
+                          <div className="text-[11px] text-slate-500">None remain</div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-2">
+                      {proxiesRemoved?.length ? (
+                        <div className="text-[11px]">
+                          <span className="text-slate-500">Proxies removed:</span>{" "}
+                          <span className="text-slate-800">{proxiesRemoved.join(", ")}</span>
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-slate-500">No proxies removed for this candidate.</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* dev view: compact IDs */}
+                {viewerMode === "dev" && (
+                  <div className="mt-3 text-[11px] text-slate-500">
+                    <div>rank_before: {rankBefore ?? "—"} | rank_after: {rankAfter ?? "—"} | delta_total: {typeof delta === "number" ? delta.toFixed(3) : "—"}</div>
+                    <div className="mt-0.5">proxies_before: {proxiesBefore?.join(", ") || "—"}</div>
+                    <div>proxies_after: {proxiesAfter?.join(", ") || "—"}</div>
+                  </div>
+                )}
+
+                {/* recruiter: evidence (fallback already shown above) */}
+                {viewerMode !== "ethics" && viewerMode !== "dev" && (
+                  <div className="mt-3 text-xs text-slate-600">
+                    {evidenceTokens.length > 0 ? (
+                      <>
+                        <span className="text-slate-500">Evidence:</span> {evidenceTokens.join(", ")}
+                      </>
+                    ) : (
+                      <>No specific evidence captured for this candidate.</>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -629,6 +819,61 @@ function SpecTag({ name, info }: { name: string; info: string }) {
     <div className="rounded-lg bg-white ring-1 ring-slate-200 px-2.5 py-1.5">
       <div className="font-medium text-slate-800">{name}</div>
       <div className="text-[11px] text-slate-500 mt-0.5">{info}</div>
+    </div>
+  );
+}
+
+/* ------------ Role context summary (used under Batch header) ------------ */
+function RoleContextSummary() {
+  const ctx =
+    (typeof window !== "undefined" ? localStorage.getItem("jobContext") : "") || "";
+  if (!ctx) return null;
+
+  const tags = (() => {
+    const s = ctx.toLowerCase();
+    const out: string[] = [];
+    if (/(frontend|front-end|react|typescript|next\.js|ui)/.test(s)) out.push("Frontend");
+    if (/(backend|back-end|api|fastapi|flask|django|golang|go)/.test(s)) out.push("Backend");
+    if (/(data engineer|etl|spark|airflow|dbt|kafka|warehouse|snowflake|bigquery)/.test(s)) out.push("Data");
+    if (/(devops|platform|sre|kubernetes|docker|terraform|ci\/cd)/.test(s)) out.push("DevOps");
+    if (/(rag|llm|langchain|llamaindex|pgvector|retrieval)/.test(s)) out.push("GenAI/RAG");
+    return out.length ? out : ["General"];
+  })();
+
+  return (
+    <div className="rounded-lg bg-white ring-1 ring-slate-200 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs font-semibold text-slate-700">Role context</div>
+        <div className="flex flex-wrap gap-1">
+          {tags.map((t) => (
+            <span
+              key={t}
+              className="inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-700 ring-1 ring-slate-200"
+            >
+              {t}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div
+        className="mt-1 text-[11px] text-slate-600 line-clamp-1"
+        title={ctx}
+      >
+        {ctx}
+      </div>
+    </div>
+  );
+}
+
+/* ------------ Proxy list pill group ------------ */
+function ProxyList({ items }: { items: string[] }) {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {items.map((p, i) => (
+        <span key={`${p}-${i}`} className="inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[10px] text-slate-700 ring-1 ring-slate-200">
+          {p}
+        </span>
+      ))}
     </div>
   );
 }
